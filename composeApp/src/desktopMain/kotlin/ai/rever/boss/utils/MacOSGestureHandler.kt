@@ -154,8 +154,8 @@ object MacOSGestureHandler {
  * Turns a stream of raw pinch magnification deltas into discrete page-zoom steps.
  *
  * One instance per listener, so several registered listeners don't feed a shared total and trip
- * the threshold N times faster than a single one would. Synchronized because deltas arrive on
- * whichever thread learned the page declined them.
+ * the threshold N times faster than a single one would. BrowserHandleImpl only calls it on the
+ * EDT; it is synchronized anyway so a caller on another thread cannot corrupt the total.
  */
 internal class PinchZoomAccumulator(
     private val threshold: Double = ZOOM_THRESHOLD,

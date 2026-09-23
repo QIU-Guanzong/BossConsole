@@ -657,21 +657,30 @@ internal class BrowserHandleImpl(
 
     private fun onPinchAnswer(
         magnification: Double,
-        claimed: Boolean,
+        answer: Boolean?,
     ) {
-        if (lastPinchClaimed != claimed) {
-            lastPinchClaimed = claimed
+        // No answer in time (see PinchOffers) means "as the page last answered": a canvas app
+        // busy zooming its canvas keeps its claim through a slow frame instead of having page
+        // zoom stacked on top. With no answer yet on this page, it falls back to page zoom,
+        // which is how every pinch behaved before #1565.
+        val claimed = answer ?: (lastPinchClaimed == true)
+        if (answer != null && lastPinchClaimed != answer) {
+            lastPinchClaimed = answer
             logger.debug(
                 LogCategory.BROWSER,
-                if (claimed) "Page claimed pinch" else "Page declined pinch, using page zoom",
+                if (answer) "Page claimed pinch" else "Page declined pinch, using page zoom",
                 mapOf("handleId" to id),
             )
         }
-        // On the EDT, the only thread that touches the accumulator, so its updates stay in the
-        // order they are applied. The answer can arrive up to the offer deadline after the gate
-        // passed, by which time the tab may be closed or the pointer somewhere else, so the gate
-        // runs again, and BEFORE the accumulator: a step it had already completed and zeroed
-        // would otherwise be thrown away along with the delta.
+        // On the EDT, the only thread that touches the accumulator. That serializes its updates
+        // but does not restore gesture order: offers are answered in completion order, so a quick
+        // answer can land before a slower earlier one. For a running sum that only matters at a
+        // direction change within one gesture.
+        //
+        // The answer can arrive up to the offer deadline after the gate passed, by which time the
+        // tab may be closed or the pointer somewhere else, so the gate runs again, and BEFORE the
+        // accumulator: a step it had already completed and zeroed would otherwise be thrown away
+        // along with the delta.
         SwingUtilities.invokeLater {
             if (claimed) {
                 pinchZoomAccumulator.reset()
@@ -708,6 +717,7 @@ internal class BrowserHandleImpl(
                 "pointerInsideBounds" to geometric.toString(),
                 "bounds" to browserViewBoundsInWindow.toString(),
                 "valid" to isValid.toString(),
+                "handleId" to id,
                 "suppressedSinceLastLine" to skipped.toString(),
             ),
         )

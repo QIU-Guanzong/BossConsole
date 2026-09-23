@@ -172,21 +172,23 @@ class BrowserPinchTest {
     @Test
     fun `the page's answer is passed on`() {
         val offers = PinchOffers(maxPending = 8, deadlineMs = 5_000)
-        val answers = mutableListOf<Boolean>()
+        val answers = mutableListOf<Boolean?>()
         offers.offer(send = { answer -> answer(true) }, onAnswer = { answers += it })
         offers.offer(send = { answer -> answer(false) }, onAnswer = { answers += it })
-        assertEquals(listOf(true, false), answers)
+        assertEquals(listOf<Boolean?>(true, false), answers)
     }
 
     @Test
-    fun `a page that never answers counts as declined at the deadline, and a late answer is dropped`() {
+    fun `a page that never answers gets no answer at the deadline, not a decline, and a late answer is dropped`() {
         val offers = PinchOffers(maxPending = 8, deadlineMs = 20)
         var late: ((Boolean) -> Unit)? = null
         val calls = AtomicInteger(0)
         val declined = CountDownLatch(1)
         offers.offer(send = { answer -> late = answer }, onAnswer = { claimed ->
             calls.incrementAndGet()
-            if (!claimed) declined.countDown()
+            // Null, not false: a timeout mid-gesture is expected while a canvas app is busy
+            // zooming, and reading it as a decline would stack page zoom on the canvas zoom.
+            if (claimed == null) declined.countDown()
         })
         assertTrue(declined.await(2, TimeUnit.SECONDS))
         late?.invoke(true)
@@ -194,14 +196,14 @@ class BrowserPinchTest {
     }
 
     @Test
-    fun `once the cap is waiting, a new delta skips the page and is declined at once`() {
+    fun `once the cap is waiting, a new delta skips the page and gets no answer at once`() {
         val offers = PinchOffers(maxPending = 2, deadlineMs = 5_000)
         val sent = AtomicInteger(0)
         repeat(2) { offers.offer(send = { sent.incrementAndGet() }, onAnswer = {}) }
-        val answers = mutableListOf<Boolean>()
+        val answers = mutableListOf<Boolean?>()
         offers.offer(send = { sent.incrementAndGet() }, onAnswer = { answers += it })
         assertEquals(2, sent.get())
-        assertEquals(listOf(false), answers)
+        assertEquals(listOf<Boolean?>(null), answers)
     }
 
     @Test
@@ -209,8 +211,8 @@ class BrowserPinchTest {
         // A leaked slot would leave every later pinch skipping the page, with the cap test above
         // still green.
         val offers = PinchOffers(maxPending = 1, deadlineMs = 5_000)
-        val answers = mutableListOf<Boolean>()
+        val answers = mutableListOf<Boolean?>()
         repeat(3) { offers.offer(send = { answer -> answer(true) }, onAnswer = { answers += it }) }
-        assertEquals(listOf(true, true, true), answers)
+        assertEquals(listOf<Boolean?>(true, true, true), answers)
     }
 }

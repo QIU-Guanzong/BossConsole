@@ -150,10 +150,16 @@ internal fun pointerFractionInBounds(
  * Offers of pinch deltas to the page that have not been answered yet, each with a deadline.
  *
  * Page zoom is answered by the browser process, so it used to work however busy the page was.
- * An offer waits on the renderer, which a busy page can stall. So each offer is answered
- * "declined" once [deadlineMs] passes, and while [maxPending] offers are waiting, a new delta
- * skips the page and is declined at once. A stalled renderer can then neither swallow a
- * gesture nor pile up offers to replay as a burst of zoom steps when it recovers.
+ * An offer waits on the renderer, which a busy page can stall. So each offer gets NO answer
+ * (null) once [deadlineMs] passes, and while [maxPending] offers are waiting, a new delta skips
+ * the page and gets no answer at once. A stalled renderer can then neither swallow a gesture nor
+ * pile up offers to replay as a burst of zoom steps when it recovers.
+ *
+ * "No answer" is kept apart from "declined" on purpose. The renderer thread a canvas app is
+ * saturating while it zooms is the same one the offer waits on, so mid-gesture timeouts are
+ * expected exactly when the page IS claiming the pinch. Reading them as declines would page-zoom
+ * on top of the canvas zoom, which is #1565 back intermittently. The caller decides what an
+ * unanswered delta means.
  */
 internal class PinchOffers(
     private val maxPending: Int,
@@ -163,27 +169,28 @@ internal class PinchOffers(
 
     /**
      * Offers one delta. [send] receives a callback to report the page's answer with. [onAnswer]
-     * is called exactly once: with that answer, or with false at the deadline or when the cap is
-     * reached. An answer that arrives after the deadline is dropped. [send] must not throw; it
-     * reports a failure by answering false.
+     * is called exactly once: with that answer, or with null at the deadline or when the cap is
+     * reached. An answer that arrives after the deadline is dropped. A [send] that fails should
+     * answer false; one that throws still frees its slot at the deadline, but the exception
+     * reaches the caller.
      */
     fun offer(
         send: (answer: (claimed: Boolean) -> Unit) -> Unit,
-        onAnswer: (claimed: Boolean) -> Unit,
+        onAnswer: (claimed: Boolean?) -> Unit,
     ) {
         // Claim a slot first and give it back if over the cap, so two racing offers cannot both
         // pass a check and then both take a slot.
         if (pending.incrementAndGet() > maxPending) {
             pending.decrementAndGet()
-            onAnswer(false)
+            onAnswer(null)
             return
         }
-        val answer = CompletableFuture<Boolean>()
+        val answer = CompletableFuture<Boolean?>()
         answer
-            .completeOnTimeout(false, deadlineMs, TimeUnit.MILLISECONDS)
+            .completeOnTimeout(null, deadlineMs, TimeUnit.MILLISECONDS)
             .whenComplete { claimed, _ ->
                 pending.decrementAndGet()
-                onAnswer(claimed == true)
+                onAnswer(claimed)
             }
         send { claimed -> answer.complete(claimed) }
     }
