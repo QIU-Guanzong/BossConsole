@@ -109,8 +109,10 @@ object NotificationCenter {
                     read = false,
                 )
             val updated = (listOf(entry) + _notifications.value).take(MAX_ENTRIES)
-            _notifications.value = updated
+            // Persist BEFORE publishing: a failed write must not leave the
+            // in-memory inbox ahead of the disk copy.
             persist(updated)
+            _notifications.value = updated
             entry
         }
     }
@@ -122,8 +124,10 @@ object NotificationCenter {
             val target = current.firstOrNull { it.id == id } ?: return@withLock false
             if (target.read) return@withLock false
             val updated = current.map { if (it.id == id) it.copy(read = true) else it }
-            _notifications.value = updated
+            // Persist BEFORE publishing: a failed write must not leave the
+            // in-memory inbox ahead of the disk copy.
             persist(updated)
+            _notifications.value = updated
             true
         }
 
@@ -134,8 +138,10 @@ object NotificationCenter {
             val changed = current.count { !it.read }
             if (changed == 0) return@withLock 0
             val updated = current.map { if (it.read) it else it.copy(read = true) }
-            _notifications.value = updated
+            // Persist BEFORE publishing: a failed write must not leave the
+            // in-memory inbox ahead of the disk copy.
             persist(updated)
+            _notifications.value = updated
             changed
         }
 
@@ -144,8 +150,10 @@ object NotificationCenter {
         mutex.withLock {
             val removed = _notifications.value.size
             if (removed == 0) return@withLock 0
-            _notifications.value = emptyList()
+            // Persist BEFORE publishing: a failed write must not leave the
+            // in-memory inbox ahead of the disk copy.
             persist(emptyList())
+            _notifications.value = emptyList()
             removed
         }
 
