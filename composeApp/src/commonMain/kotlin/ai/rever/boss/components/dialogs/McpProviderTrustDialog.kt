@@ -81,7 +81,7 @@ fun McpProviderTrustDialog(
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text =
-                        "Saved from \"Trust This Plugin\" in the tool approval dialog. Removing " +
+                        "Saved from \"Trust plugin\" in the tool approval dialog. Removing " +
                             "one returns every tool from that plugin to its own rule or the " +
                             "default policy - not necessarily to asking again.",
                     fontSize = 12.sp,
