@@ -150,14 +150,33 @@ internal fun pointerFractionInBounds(
     )
 }
 
+/** How an offer of a pinch delta to the page ended. See [PinchOffers]. */
+internal enum class PinchAnswer {
+    /** The page called `preventDefault()`: it is zooming its own canvas. */
+    CLAIMED,
+
+    /** The page let the event through: BOSS page zoom applies. */
+    DECLINED,
+
+    /** The page did not answer before the deadline, which is evidence it is busy or hung. */
+    TIMED_OUT,
+
+    /**
+     * Never offered, because the cap of waiting offers was reached. Backpressure, not evidence
+     * about the page, so a caller must not count it the way it counts [TIMED_OUT].
+     */
+    SKIPPED,
+}
+
 /**
  * Offers of pinch deltas to the page that have not been answered yet, each with a deadline.
  *
  * Page zoom is answered by the browser process, so it used to work however busy the page was.
- * An offer waits on the renderer, which a busy page can stall. So each offer gets NO answer
- * (null) once [deadlineMs] passes, and while [maxPending] offers are waiting, a new delta skips
- * the page and gets no answer at once. A stalled renderer can then neither swallow a gesture nor
- * pile up offers to replay as a burst of zoom steps when it recovers.
+ * An offer waits on the renderer, which a busy page can stall. So each offer ends
+ * [PinchAnswer.TIMED_OUT] once [deadlineMs] passes, and while [maxPending] offers are waiting, a
+ * new delta skips the page and ends [PinchAnswer.SKIPPED] at once. A stalled renderer can then
+ * neither swallow a gesture nor pile up offers to replay as a burst of zoom steps when it
+ * recovers.
  *
  * "No answer" is kept apart from "declined" on purpose. The renderer thread a canvas app is
  * saturating while it zooms is the same one the offer waits on, so mid-gesture timeouts are
@@ -175,21 +194,20 @@ internal class PinchOffers(
      * Offers one delta. [send] receives a callback to report the page's answer with, and a check
      * that turns true once the offer has been answered by any path. A [send] that queues its work
      * should skip it when the check is true, so a backed-up queue does not run old offers late.
-     * [onAnswer]
-     * is called exactly once: with that answer, or with null at the deadline or when the cap is
-     * reached. An answer that arrives after the deadline is dropped. A [send] that fails should
-     * answer false; one that throws still frees its slot at the deadline, but the exception
-     * reaches the caller.
+     * [onAnswer] is called exactly once: with that answer, with [PinchAnswer.TIMED_OUT] at the
+     * deadline, or with [PinchAnswer.SKIPPED] when the cap is reached. An answer that arrives after the deadline
+     * is dropped. A [send] that fails should answer false; one that throws still frees its slot at
+     * the deadline, but the exception reaches the caller.
      */
     fun offer(
         send: (answer: (claimed: Boolean) -> Unit, isStale: () -> Boolean) -> Unit,
-        onAnswer: (claimed: Boolean?) -> Unit,
+        onAnswer: (answer: PinchAnswer) -> Unit,
     ) {
         // Claim a slot first and give it back if over the cap, so two racing offers cannot both
         // pass a check and then both take a slot.
         if (pending.incrementAndGet() > maxPending) {
             pending.decrementAndGet()
-            onAnswer(null)
+            onAnswer(PinchAnswer.SKIPPED)
             return
         }
         val answer = CompletableFuture<Boolean?>()
@@ -199,10 +217,20 @@ internal class PinchOffers(
                 pending.decrementAndGet()
                 // The future whenComplete returns is discarded, so an exception from onAnswer
                 // would vanish without a trace. Surface it on the thread's handler instead.
-                runCatching { onAnswer(claimed) }.onFailure { e ->
+                val result =
+                    when (claimed) {
+                        true -> PinchAnswer.CLAIMED
+                        false -> PinchAnswer.DECLINED
+                        null -> PinchAnswer.TIMED_OUT
+                    }
+                runCatching { onAnswer(result) }.onFailure { e ->
                     Thread.currentThread().let { it.uncaughtExceptionHandler?.uncaughtException(it, e) }
                 }
             }
         send({ claimed -> answer.complete(claimed) }, { answer.isDone })
     }
 }
+
+/** Whether [shouldAllowPinch] consults geometry in [mode], rather than Compose hover alone. */
+internal fun pinchGateUsesGeometry(mode: com.teamdev.jxbrowser.engine.RenderingMode): Boolean =
+    mode == com.teamdev.jxbrowser.engine.RenderingMode.HARDWARE_ACCELERATED

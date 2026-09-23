@@ -172,10 +172,10 @@ class BrowserPinchTest {
     @Test
     fun `the page's answer is passed on`() {
         val offers = PinchOffers(maxPending = 8, deadlineMs = 5_000)
-        val answers = mutableListOf<Boolean?>()
+        val answers = mutableListOf<PinchAnswer>()
         offers.offer(send = { answer, _ -> answer(true) }, onAnswer = { answers += it })
         offers.offer(send = { answer, _ -> answer(false) }, onAnswer = { answers += it })
-        assertEquals(listOf<Boolean?>(true, false), answers)
+        assertEquals(listOf(PinchAnswer.CLAIMED, PinchAnswer.DECLINED), answers)
     }
 
     @Test
@@ -186,9 +186,9 @@ class BrowserPinchTest {
         val declined = CountDownLatch(1)
         offers.offer(send = { answer, _ -> late = answer }, onAnswer = { claimed ->
             calls.incrementAndGet()
-            // Null, not false: a timeout mid-gesture is expected while a canvas app is busy
+            // TIMED_OUT, not DECLINED: a timeout mid-gesture is expected while a canvas app is busy
             // zooming, and reading it as a decline would stack page zoom on the canvas zoom.
-            if (claimed == null) declined.countDown()
+            if (claimed == PinchAnswer.TIMED_OUT) declined.countDown()
         })
         assertTrue(declined.await(2, TimeUnit.SECONDS))
         late?.invoke(true)
@@ -200,10 +200,10 @@ class BrowserPinchTest {
         val offers = PinchOffers(maxPending = 2, deadlineMs = 5_000)
         val sent = AtomicInteger(0)
         repeat(2) { offers.offer(send = { _, _ -> sent.incrementAndGet() }, onAnswer = {}) }
-        val answers = mutableListOf<Boolean?>()
+        val answers = mutableListOf<PinchAnswer>()
         offers.offer(send = { _, _ -> sent.incrementAndGet() }, onAnswer = { answers += it })
         assertEquals(2, sent.get())
-        assertEquals(listOf<Boolean?>(null), answers)
+        assertEquals(listOf(PinchAnswer.SKIPPED), answers)
     }
 
     @Test
@@ -211,9 +211,9 @@ class BrowserPinchTest {
         // A leaked slot would leave every later pinch skipping the page, with the cap test above
         // still green.
         val offers = PinchOffers(maxPending = 1, deadlineMs = 5_000)
-        val answers = mutableListOf<Boolean?>()
+        val answers = mutableListOf<PinchAnswer>()
         repeat(3) { offers.offer(send = { answer, _ -> answer(true) }, onAnswer = { answers += it }) }
-        assertEquals(listOf<Boolean?>(true, true, true), answers)
+        assertEquals(List(3) { PinchAnswer.CLAIMED }, answers)
     }
 
     @Test

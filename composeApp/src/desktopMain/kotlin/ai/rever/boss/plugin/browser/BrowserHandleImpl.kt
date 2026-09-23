@@ -614,7 +614,7 @@ internal class BrowserHandleImpl(
         val script = BrowserPinchScript.dispatch(magnification, fraction?.x?.toDouble(), fraction?.y?.toDouble())
         pinchOffers.offer(
             send = { answer, isStale -> sendPinchOffer(script, answer, isStale) },
-            onAnswer = { claimed -> onPinchAnswer(magnification, claimed) },
+            onAnswer = { answer -> onPinchAnswer(magnification, answer) },
         )
     }
 
@@ -625,11 +625,12 @@ internal class BrowserHandleImpl(
      */
     private fun worthReadingPointer(magnification: Double): Boolean {
         val moves = magnification.isFinite() && magnification != 0.0
-        val hoverRulesOut =
-            JxBrowserConfig.renderingMode != com.teamdev.jxbrowser.engine.RenderingMode.HARDWARE_ACCELERATED &&
-                !pointerOverBrowserView
-        if (moves && isValid && hoverRulesOut) logPinchSuppressed(magnification, null)
-        return moves && isValid && !hoverRulesOut
+        // Where the gate does not consult geometry it is decided in full here, by the same
+        // shouldAllowPinch, so this fast path cannot drift from the rule it shortcuts.
+        val gateAllows =
+            (pinchGateUsesGeometry(JxBrowserConfig.renderingMode) && isValid) || pinchGateOpen(null)
+        if (moves && !gateAllows) logPinchSuppressed(magnification, null)
+        return moves && gateAllows
     }
 
     private fun pinchGateOpen(pointerInsideBounds: Boolean?): Boolean =
@@ -676,30 +677,9 @@ internal class BrowserHandleImpl(
 
     private fun onPinchAnswer(
         magnification: Double,
-        answer: Boolean?,
+        result: PinchAnswer,
     ) {
-        // No answer in time (see PinchOffers) means "as the page last answered": a canvas app
-        // busy zooming its canvas keeps its claim through a slow frame instead of having page
-        // zoom stacked on top. With no answer yet on this page, it falls back to page zoom,
-        // which is how every pinch behaved before #1565.
-        // Past MAX_UNANSWERED_PINCH_CLAIMS the page is taken to be hung rather than busy, and
-        // deltas go back to page zoom; otherwise a renderer that hung after claiming would leave
-        // pinch doing nothing at all until the tab navigated.
-        val claimed =
-            if (answer != null) {
-                unansweredPinchOffers.set(0)
-                answer
-            } else {
-                lastPinchClaimed == true && unansweredPinchOffers.incrementAndGet() <= MAX_UNANSWERED_PINCH_CLAIMS
-            }
-        if (answer != null && lastPinchClaimed != answer) {
-            lastPinchClaimed = answer
-            logger.debug(
-                LogCategory.BROWSER,
-                if (answer) "Page claimed pinch" else "Page declined pinch, using page zoom",
-                mapOf("handleId" to id),
-            )
-        }
+        val claimed = resolvePinchClaim(result)
         // On the EDT, the only thread that touches the accumulator. That serializes its updates
         // but does not restore gesture order: offers are answered in completion order, so a quick
         // answer can land before a slower earlier one. For a running sum that only matters at a
@@ -721,6 +701,43 @@ internal class BrowserHandleImpl(
                 null -> Unit
             }
         }
+    }
+
+    /**
+     * Whether a delta counts as claimed by the page, given how its offer ended.
+     *
+     * No answer in time means "as the page last answered": a canvas app busy zooming its canvas
+     * keeps its claim through a slow frame instead of having page zoom stacked on top. With no
+     * answer yet on this page, it falls back to page zoom, which is how every pinch behaved
+     * before #1565. Past [MAX_UNANSWERED_PINCH_CLAIMS] timeouts in a row the page is taken to be
+     * hung rather than busy, and deltas go back to page zoom; otherwise a renderer that hung
+     * after claiming would leave pinch doing nothing at all until the tab navigated.
+     *
+     * Only a timeout spends that budget. A skipped offer was never asked, so it carries the last
+     * claim for free: skips arrive at trackpad rate and would use up the whole budget inside one
+     * deadline while the page is merely slow.
+     */
+    private fun resolvePinchClaim(result: PinchAnswer): Boolean {
+        val answer =
+            when (result) {
+                PinchAnswer.CLAIMED -> true
+                PinchAnswer.DECLINED -> false
+                PinchAnswer.TIMED_OUT, PinchAnswer.SKIPPED -> null
+            }
+        if (answer == null) {
+            if (result == PinchAnswer.TIMED_OUT) unansweredPinchOffers.incrementAndGet()
+            return lastPinchClaimed == true && unansweredPinchOffers.get() <= MAX_UNANSWERED_PINCH_CLAIMS
+        }
+        unansweredPinchOffers.set(0)
+        if (lastPinchClaimed != answer) {
+            lastPinchClaimed = answer
+            logger.debug(
+                LogCategory.BROWSER,
+                if (answer) "Page claimed pinch" else "Page declined pinch, using page zoom",
+                mapOf("handleId" to id),
+            )
+        }
+        return answer
     }
 
     private fun logPinchSuppressed(
@@ -1656,8 +1673,10 @@ internal class BrowserHandleImpl(
         // injection path: between the two, every way the renderer can change is accounted for.
         subscriptions +=
             browser.on(RenderProcessTerminated::class.java) { event ->
-                // A dead renderer cannot be claiming anything.
+                // A dead renderer cannot be claiming anything. Reset exactly as NavigationStarted
+                // does, so the two claim fields always go stale together.
                 lastPinchClaimed = null
+                unansweredPinchOffers.set(0)
                 logger.debug(
                     LogCategory.BROWSER,
                     "Renderer terminated",
@@ -4891,7 +4910,7 @@ internal fun shouldAllowPinch(
     pointerInsideBounds: Boolean?,
 ): Boolean {
     if (!isValid) return false
-    return if (mode == com.teamdev.jxbrowser.engine.RenderingMode.HARDWARE_ACCELERATED) {
+    return if (pinchGateUsesGeometry(mode)) {
         pointerInsideBounds == true
     } else {
         pointerOverComposeView
