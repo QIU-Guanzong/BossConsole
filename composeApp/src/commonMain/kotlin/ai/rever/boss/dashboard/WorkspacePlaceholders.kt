@@ -144,10 +144,11 @@ object WorkspacePlaceholders {
         // Replace Claude continue flag based on session existence. Guarded too:
         // checkClaudeSessionExists lists ~/.claude/projects/<encoded>.
         if (result.contains(CLAUDE_CONTINUE_FLAG_PLACEHOLDER)) {
-            result = result.replace(
-                CLAUDE_CONTINUE_FLAG_PLACEHOLDER,
-                getClaudeContinueFlag(selectedProject),
-            )
+            result =
+                result.replace(
+                    CLAUDE_CONTINUE_FLAG_PLACEHOLDER,
+                    getClaudeContinueFlag(selectedProject),
+                )
         }
 
         return result
@@ -169,9 +170,12 @@ object WorkspacePlaceholders {
             val exitCode = process.waitFor()
 
             // Validate: git must succeed and output must look like a URL/remote
-            if (exitCode != 0 || (
-                    !url.startsWith("git@") && !url.startsWith("https://") &&
-                        !url.startsWith("http://") && !url.startsWith("ssh://")
+            if (exitCode != 0 ||
+                (
+                    !url.startsWith("git@") &&
+                        !url.startsWith("https://") &&
+                        !url.startsWith("http://") &&
+                        !url.startsWith("ssh://")
                 )
             ) {
                 return "https://google.com"
