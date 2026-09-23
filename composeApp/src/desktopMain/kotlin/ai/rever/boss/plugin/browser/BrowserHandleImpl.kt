@@ -15,6 +15,7 @@ import ai.rever.boss.plugin.window.LocalWindowId
 import ai.rever.boss.tabfullscreen.FullscreenBrowserWindow
 import ai.rever.boss.tabfullscreen.TabFullscreenStateManager
 import ai.rever.boss.utils.MacOSGestureHandler
+import ai.rever.boss.utils.PinchZoomAccumulator
 import ai.rever.boss.utils.WindowFocusManager
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
@@ -119,8 +120,10 @@ import java.awt.GraphicsEnvironment
 import java.awt.Window
 import java.lang.ref.WeakReference
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -529,9 +532,30 @@ internal class BrowserHandleImpl(
      * view and to refuse near its bottom edge.
      */
     private fun pointerInsideBrowserView(): Boolean? {
-        val bounds = browserViewBoundsInWindow
-        val window = gestureHostWindow
-        if (bounds == null || window == null) return null
+        val bounds = browserViewBoundsInWindow ?: return null
+        return pointerInContentPane()?.let {
+            pointerInsideBounds(boundsPx = bounds, pointerLogical = it, density = browserViewDensity)
+        }
+    }
+
+    /**
+     * Where in this view the pointer sits, as a fraction of its width and height, for aiming a
+     * pinch at the element under the cursor. Null when unknown, for the reasons
+     * [pointerInsideBrowserView] gives.
+     */
+    private fun pointerFractionInBrowserView(): androidx.compose.ui.geometry.Offset? {
+        val bounds = browserViewBoundsInWindow ?: return null
+        return pointerInContentPane()?.let {
+            pointerFractionInBounds(boundsPx = bounds, pointerLogical = it, density = browserViewDensity)
+        }
+    }
+
+    /**
+     * The pointer in the host window's content pane, in AWT logical units, or null when there is
+     * no window or no pointer. See [pointerInsideBrowserView] for why the content pane.
+     */
+    private fun pointerInContentPane(): androidx.compose.ui.geometry.Offset? {
+        val window = gestureHostWindow ?: return null
         return try {
             // Read INSIDE the try, unlike before: getPointerInfo throws HeadlessException rather
             // than returning null in a headless JVM, so reading it outside made the KDoc's promise
@@ -545,13 +569,8 @@ internal class BrowserHandleImpl(
             // because a window mid-teardown is an ordinary state here, not an error.
             if (pointer != null && origin.isShowing) {
                 javax.swing.SwingUtilities.convertPointFromScreen(pointer, origin)
-                pointerInsideBounds(
-                    boundsPx = bounds,
-                    pointerLogical =
-                        androidx.compose.ui.geometry
-                            .Offset(pointer.x.toFloat(), pointer.y.toFloat()),
-                    density = browserViewDensity,
-                )
+                androidx.compose.ui.geometry
+                    .Offset(pointer.x.toFloat(), pointer.y.toFloat())
             } else {
                 null
             }
@@ -566,37 +585,104 @@ internal class BrowserHandleImpl(
         }
     }
 
-    // Runs a pinch-triggered zoom only when the pointer is over this view and the
-    // handle is alive; logs suppressions with both inputs, because a wrong gate
-    // presents as pinch silently not working (or zooming a non-hovered view) and the
-    // two causes are indistinguishable from the outside.
-    private inline fun gatedPinchZoom(
-        direction: String,
-        zoom: () -> Unit,
-    ) {
+    // Smooths the magnification deltas the page declined into page-zoom steps.
+    private val pinchZoomAccumulator = PinchZoomAccumulator()
+
+    // Pinch deltas offered to the page and not yet answered. Bounds what a stalled renderer can
+    // pile up: past the cap a delta goes straight to page zoom instead of joining the queue.
+    private val pendingPinchOffers = AtomicInteger(0)
+
+    // When "Pinch zoom suppressed" was last logged. Every browser in a window hears every
+    // delta, so unthrottled the line is written (views - 1) times per event, dozens of times a
+    // second, and buries the one occurrence worth reading.
+    @Volatile private var lastPinchSuppressedLogAt = 0L
+
+    /**
+     * One macOS pinch delta, arriving on the EDT from the window-wide gesture listener.
+     *
+     * Gated first: only the browser under the pointer may act on it. Logs suppressions with both
+     * gate inputs, because a wrong gate presents as pinch silently not working (or zooming a
+     * non-hovered view) and the two causes are indistinguishable from the outside.
+     *
+     * Then offered to the page as a Ctrl+wheel event, the way Chrome and Safari deliver a pinch,
+     * so a canvas app zooms its canvas instead of BOSS zooming the whole page (#1565). Only a
+     * delta the page declines feeds page zoom.
+     *
+     * The offer is asynchronous and on a deadline, and deliberately not a blocking call on
+     * [pageInjectDispatcher]. Page zoom is answered by the browser process, so it used to work
+     * however busy the page was. A blocking offer would queue every delta behind a stalled
+     * renderer, swallow the gesture, then replay it as a burst of zoom steps once the page
+     * recovered. On a deadline, a page that cannot answer in time is treated as having
+     * declined, which is the old behaviour.
+     */
+    private fun onPinchMagnify(magnification: Double) {
         val geometric = pointerInsideBrowserView()
-        if (shouldAllowPinch(
+        if (!shouldAllowPinch(
                 mode = JxBrowserConfig.renderingMode,
                 isValid = isValid,
                 pointerOverComposeView = pointerOverBrowserView,
                 pointerInsideBounds = geometric,
             )
         ) {
-            zoom()
-        } else {
-            logger.debug(
-                LogCategory.BROWSER,
-                "Pinch zoom suppressed",
-                mapOf(
-                    "direction" to direction,
-                    "mode" to JxBrowserConfig.renderingMode.name,
-                    "hovered" to pointerOverBrowserView.toString(),
-                    "pointerInsideBounds" to geometric.toString(),
-                    "bounds" to browserViewBoundsInWindow.toString(),
-                    "valid" to isValid.toString(),
-                ),
-            )
+            logPinchSuppressed(magnification, geometric)
+            return
         }
+        if (pendingPinchOffers.get() >= MAX_PENDING_PINCH_OFFERS) {
+            applyDeclinedPinch(magnification)
+            return
+        }
+        val fraction = pointerFractionInBrowserView()
+        val script = BrowserPinchScript.dispatch(magnification, fraction?.x?.toDouble(), fraction?.y?.toDouble())
+        val answer = CompletableFuture<Boolean>()
+        pendingPinchOffers.incrementAndGet()
+        answer
+            .completeOnTimeout(false, PINCH_OFFER_DEADLINE_MS, TimeUnit.MILLISECONDS)
+            .whenComplete { claimed, _ ->
+                pendingPinchOffers.decrementAndGet()
+                if (claimed == true) pinchZoomAccumulator.reset() else applyDeclinedPinch(magnification)
+            }
+        try {
+            val frame = browser.mainFrame().orElse(null)
+            if (frame == null) {
+                answer.complete(false)
+            } else {
+                frame.executeJavaScript(script) { result: Any? -> answer.complete(result == true) }
+            }
+        } catch (e: Exception) {
+            // The browser can close between the gate and the call.
+            logger.debug(LogCategory.BROWSER, "Pinch offer to page failed", mapOf("error" to e.toString()))
+            answer.complete(false)
+        }
+    }
+
+    // A pinch delta the page did not claim: toward a page-zoom step, as before #1565.
+    private fun applyDeclinedPinch(magnification: Double) {
+        when (pinchZoomAccumulator.add(magnification)) {
+            PinchZoomAccumulator.Step.IN -> SwingUtilities.invokeLater { zoomIn() }
+            PinchZoomAccumulator.Step.OUT -> SwingUtilities.invokeLater { zoomOut() }
+            null -> Unit
+        }
+    }
+
+    private fun logPinchSuppressed(
+        magnification: Double,
+        geometric: Boolean?,
+    ) {
+        val now = System.currentTimeMillis()
+        if (now - lastPinchSuppressedLogAt < PINCH_SUPPRESSED_LOG_INTERVAL_MS) return
+        lastPinchSuppressedLogAt = now
+        logger.debug(
+            LogCategory.BROWSER,
+            "Pinch zoom suppressed",
+            mapOf(
+                "magnification" to magnification.toString(),
+                "mode" to JxBrowserConfig.renderingMode.name,
+                "hovered" to pointerOverBrowserView.toString(),
+                "pointerInsideBounds" to geometric.toString(),
+                "bounds" to browserViewBoundsInWindow.toString(),
+                "valid" to isValid.toString(),
+            ),
+        )
     }
 
     /**
@@ -3974,11 +4060,7 @@ internal class BrowserHandleImpl(
 
                     if (rootPane != null) {
                         gestureToken =
-                            MacOSGestureHandler.addMagnificationListener(
-                                rootPane,
-                                onZoomIn = { gatedPinchZoom("in") { zoomIn() } },
-                                onZoomOut = { gatedPinchZoom("out") { zoomOut() } },
-                            )
+                            MacOSGestureHandler.addMagnificationListener(rootPane) { onPinchMagnify(it) }
                         if (gestureToken != null) {
                             gesturePane = rootPane
                             // The gate needs this window to place the pointer in the same
@@ -4339,6 +4421,19 @@ internal class BrowserHandleImpl(
     companion object {
         /** How much of a page-authored co-browse status string reaches the log. */
         private const val STATUS_LOG_LIMIT = 80
+
+        /**
+         * How long the page gets to claim a pinch delta before it counts as declined. Long enough
+         * for a canvas app's wheel handler on a loaded page, short enough that a busy page still
+         * page-zooms within the gesture it was asked in.
+         */
+        private const val PINCH_OFFER_DEADLINE_MS = 150L
+
+        /** Unanswered pinch offers allowed at once; about a tenth of a second of trackpad events. */
+        private const val MAX_PENDING_PINCH_OFFERS = 8
+
+        /** At most one "Pinch zoom suppressed" line per handle per this interval. */
+        private const val PINCH_SUPPRESSED_LOG_INTERVAL_MS = 1_000L
 
         /**
          * Popup browsers we are currently waiting to capture an upload body for.
