@@ -546,10 +546,7 @@ internal class BrowserHandleImpl(
             // Read INSIDE the try, unlike before: getPointerInfo throws HeadlessException rather
             // than returning null in a headless JVM, so reading it outside made the KDoc's promise
             // of "null when there is no pointer" false in exactly the case it names.
-            val pointer =
-                java.awt.MouseInfo
-                    .getPointerInfo()
-                    ?.location
+            val pointer = sharedPointerOnScreen()
             val origin = (window as? javax.swing.RootPaneContainer)?.contentPane ?: window
             // convertPointFromScreen requires a showing component. Checked rather than relied on
             // because a window mid-teardown is an ordinary state here, not an error.
@@ -598,9 +595,7 @@ internal class BrowserHandleImpl(
      * [pageInjectDispatcher], which would queue every delta behind a stalled renderer.
      */
     private fun onPinchMagnify(magnification: Double) {
-        // Zero arrives at a gesture's begin and end phases and moves nothing, so it is not worth
-        // an offer slot or a page event.
-        if (!magnification.isFinite() || magnification == 0.0) return
+        if (!worthReadingPointer(magnification)) return
         val pointer = pointerInContentPane()
         val bounds = browserViewBoundsInWindow
         val density = browserViewDensity
@@ -614,9 +609,23 @@ internal class BrowserHandleImpl(
             if (pointer != null && bounds != null) pointerFractionInBounds(bounds, pointer, density) else null
         val script = BrowserPinchScript.dispatch(magnification, fraction?.x?.toDouble(), fraction?.y?.toDouble())
         pinchOffers.offer(
-            send = { answer -> sendPinchOffer(script, answer) },
+            send = { answer, isStale -> sendPinchOffer(script, answer, isStale) },
             onAnswer = { claimed -> onPinchAnswer(magnification, claimed) },
         )
+    }
+
+    /**
+     * Cheap checks before the native pointer read, since every browser in the window hears every
+     * delta. Zero arrives at a gesture's begin and end phases and moves nothing; a dead handle
+     * cannot zoom; and under OFF_SCREEN, hover already says the pointer is elsewhere.
+     */
+    private fun worthReadingPointer(magnification: Double): Boolean {
+        val moves = magnification.isFinite() && magnification != 0.0
+        val hoverRulesOut =
+            JxBrowserConfig.renderingMode != com.teamdev.jxbrowser.engine.RenderingMode.HARDWARE_ACCELERATED &&
+                !pointerOverBrowserView
+        if (moves && isValid && hoverRulesOut) logPinchSuppressed(magnification, null)
+        return moves && isValid && !hoverRulesOut
     }
 
     private fun pinchGateOpen(pointerInsideBounds: Boolean?): Boolean =
@@ -634,8 +643,14 @@ internal class BrowserHandleImpl(
     private fun sendPinchOffer(
         script: String,
         answer: (Boolean) -> Unit,
+        isStale: () -> Boolean,
     ) {
-        pageInjectScope.launch(pageInjectDispatcher) { sendPinchOfferNow(script, answer) }
+        pageInjectScope.launch(pageInjectDispatcher) {
+            // An offer whose deadline already answered for it is dropped, not run late: a queue
+            // that backed up behind a stall would otherwise replay old wheel events into the
+            // canvas after the gesture ended.
+            if (!isStale()) sendPinchOfferNow(script, answer)
+        }
     }
 
     private fun sendPinchOfferNow(
@@ -1367,6 +1382,9 @@ internal class BrowserHandleImpl(
             browser.navigation().on(NavigationStarted::class.java) { _ ->
                 // Any frame navigation revokes menu tokens, including same-document transitions.
                 menuContextAuthority.invalidate()
+                // A pinch claim belongs to the page that made it. Carried over, a timed-out offer
+                // on the next page would read as claimed and page zoom would silently do nothing.
+                lastPinchClaimed = null
                 _isLoading = true
                 loadingListeners.forEach { listener ->
                     try {
@@ -4472,6 +4490,31 @@ internal class BrowserHandleImpl(
 
         /** At most one "Pinch zoom suppressed" line, across all handles, per this interval. */
         private const val PINCH_SUPPRESSED_LOG_INTERVAL_NS = 1_000_000_000L
+
+        // One pointer read serves every handle that hears the same delta. Every browser in a
+        // window gets each magnification event, so without this the native read ran once per
+        // view per event. Screen coordinates, so it is valid for any window; the TTL is well
+        // under one trackpad event interval.
+        private const val SHARED_POINTER_TTL_NS = 4_000_000L
+
+        @Volatile private var sharedPointer: Pair<Long, java.awt.Point?>? = null
+
+        /** The pointer on screen, read at most once per [SHARED_POINTER_TTL_NS]; a copy each call. */
+        private fun sharedPointerOnScreen(): java.awt.Point? {
+            val now = System.nanoTime()
+            val cached = sharedPointer
+            val point =
+                if (cached != null && now - cached.first < SHARED_POINTER_TTL_NS) {
+                    cached.second
+                } else {
+                    java.awt.MouseInfo
+                        .getPointerInfo()
+                        ?.location
+                        .also { sharedPointer = now to it }
+                }
+            // A copy, because callers convert it in place with convertPointFromScreen.
+            return point?.let { java.awt.Point(it) }
+        }
 
         // When "Pinch zoom suppressed" was last written (nanoTime), and how many suppressions it
         // covers. Starts an interval in the past so the first suppression is always logged.

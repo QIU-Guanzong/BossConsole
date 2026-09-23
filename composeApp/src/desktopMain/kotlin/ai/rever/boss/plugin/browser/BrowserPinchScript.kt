@@ -168,14 +168,17 @@ internal class PinchOffers(
     private val pending = AtomicInteger(0)
 
     /**
-     * Offers one delta. [send] receives a callback to report the page's answer with. [onAnswer]
+     * Offers one delta. [send] receives a callback to report the page's answer with, and a check
+     * that turns true once the offer has been answered by any path. A [send] that queues its work
+     * should skip it when the check is true, so a backed-up queue does not run old offers late.
+     * [onAnswer]
      * is called exactly once: with that answer, or with null at the deadline or when the cap is
      * reached. An answer that arrives after the deadline is dropped. A [send] that fails should
      * answer false; one that throws still frees its slot at the deadline, but the exception
      * reaches the caller.
      */
     fun offer(
-        send: (answer: (claimed: Boolean) -> Unit) -> Unit,
+        send: (answer: (claimed: Boolean) -> Unit, isStale: () -> Boolean) -> Unit,
         onAnswer: (claimed: Boolean?) -> Unit,
     ) {
         // Claim a slot first and give it back if over the cap, so two racing offers cannot both
@@ -192,6 +195,6 @@ internal class PinchOffers(
                 pending.decrementAndGet()
                 onAnswer(claimed)
             }
-        send { claimed -> answer.complete(claimed) }
+        send({ claimed -> answer.complete(claimed) }, { answer.isDone })
     }
 }

@@ -173,8 +173,8 @@ class BrowserPinchTest {
     fun `the page's answer is passed on`() {
         val offers = PinchOffers(maxPending = 8, deadlineMs = 5_000)
         val answers = mutableListOf<Boolean?>()
-        offers.offer(send = { answer -> answer(true) }, onAnswer = { answers += it })
-        offers.offer(send = { answer -> answer(false) }, onAnswer = { answers += it })
+        offers.offer(send = { answer, _ -> answer(true) }, onAnswer = { answers += it })
+        offers.offer(send = { answer, _ -> answer(false) }, onAnswer = { answers += it })
         assertEquals(listOf<Boolean?>(true, false), answers)
     }
 
@@ -184,7 +184,7 @@ class BrowserPinchTest {
         var late: ((Boolean) -> Unit)? = null
         val calls = AtomicInteger(0)
         val declined = CountDownLatch(1)
-        offers.offer(send = { answer -> late = answer }, onAnswer = { claimed ->
+        offers.offer(send = { answer, _ -> late = answer }, onAnswer = { claimed ->
             calls.incrementAndGet()
             // Null, not false: a timeout mid-gesture is expected while a canvas app is busy
             // zooming, and reading it as a decline would stack page zoom on the canvas zoom.
@@ -199,9 +199,9 @@ class BrowserPinchTest {
     fun `once the cap is waiting, a new delta skips the page and gets no answer at once`() {
         val offers = PinchOffers(maxPending = 2, deadlineMs = 5_000)
         val sent = AtomicInteger(0)
-        repeat(2) { offers.offer(send = { sent.incrementAndGet() }, onAnswer = {}) }
+        repeat(2) { offers.offer(send = { _, _ -> sent.incrementAndGet() }, onAnswer = {}) }
         val answers = mutableListOf<Boolean?>()
-        offers.offer(send = { sent.incrementAndGet() }, onAnswer = { answers += it })
+        offers.offer(send = { _, _ -> sent.incrementAndGet() }, onAnswer = { answers += it })
         assertEquals(2, sent.get())
         assertEquals(listOf<Boolean?>(null), answers)
     }
@@ -212,7 +212,20 @@ class BrowserPinchTest {
         // still green.
         val offers = PinchOffers(maxPending = 1, deadlineMs = 5_000)
         val answers = mutableListOf<Boolean?>()
-        repeat(3) { offers.offer(send = { answer -> answer(true) }, onAnswer = { answers += it }) }
+        repeat(3) { offers.offer(send = { answer, _ -> answer(true) }, onAnswer = { answers += it }) }
         assertEquals(listOf<Boolean?>(true, true, true), answers)
+    }
+
+    @Test
+    fun `an offer answered by its deadline reads as stale to a queued send`() {
+        // A send that backed up behind a stalled renderer checks this and drops the offer
+        // instead of replaying an old wheel event into the page after the gesture ended.
+        val offers = PinchOffers(maxPending = 8, deadlineMs = 20)
+        var stale: (() -> Boolean)? = null
+        val answered = CountDownLatch(1)
+        offers.offer(send = { _, isStale -> stale = isStale }, onAnswer = { answered.countDown() })
+        assertFalse(stale!!())
+        assertTrue(answered.await(2, TimeUnit.SECONDS))
+        assertTrue(stale!!())
     }
 }
