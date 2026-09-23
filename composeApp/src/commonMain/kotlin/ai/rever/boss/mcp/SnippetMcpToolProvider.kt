@@ -160,12 +160,14 @@ object SnippetMcpToolProvider : McpToolProvider {
         if (body == null) {
             return McpToolResult("body is required", isError = true)
         }
-        val tags = parseTags(args.string("tags"))
+        // Absent 'tags' means "keep the existing set" on update; an explicit
+        // empty string clears it.
+        val tags = args.string("tags")?.let(::parseTags)
         val id = args.string("id")
 
         val saved =
             if (id.isNullOrBlank()) {
-                SnippetLibraryManager.add(title, body, tags)
+                SnippetLibraryManager.add(title, body, tags.orEmpty())
             } else {
                 SnippetLibraryManager.update(id, title, body, tags)
                     ?: return McpToolResult("Snippet '$id' not found; omit 'id' to create a new one", isError = true)

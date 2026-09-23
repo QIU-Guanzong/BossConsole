@@ -79,6 +79,18 @@ class SnippetLibraryManagerTest {
         }
 
     @Test
+    fun `update without tags preserves the existing set`() =
+        runBlocking {
+            val original = SnippetLibraryManager.add("Title", "body", listOf("keep", "this"))
+
+            val edited = SnippetLibraryManager.update(original.id, "Title 2", "body 2")
+
+            assertEquals(listOf("keep", "this"), edited?.tags, "omitted tags must not erase the existing set")
+            val cleared = SnippetLibraryManager.update(original.id, "Title 2", "body 2", emptyList())
+            assertEquals(emptyList(), cleared?.tags, "an explicit empty list is how tags are cleared")
+        }
+
+    @Test
     fun `update of an unknown id returns null and does not create`() =
         runBlocking {
             val result = SnippetLibraryManager.update("snippet-does-not-exist", "t", "b")

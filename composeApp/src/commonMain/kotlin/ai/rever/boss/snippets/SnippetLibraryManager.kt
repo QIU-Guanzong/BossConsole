@@ -135,21 +135,24 @@ object SnippetLibraryManager {
                     updatedAt = now,
                 )
             val updated = _snippets.value + snippet
-            _snippets.value = updated
+            // Persist BEFORE publishing: a failed write must not leave the
+            // in-memory library ahead of the disk copy.
             persist(updated)
+            _snippets.value = updated
             snippet
         }
     }
 
     /**
      * Update the title/body/tags of an existing snippet, preserving its [Snippet.createdAt] and
-     * bumping [Snippet.updatedAt]. Returns the updated snippet, or null when [id] is unknown.
+     * bumping [Snippet.updatedAt]. A null [tags] leaves the existing tags alone. Returns the
+     * updated snippet, or null when [id] is unknown.
      */
     suspend fun update(
         id: String,
         title: String,
         body: String,
-        tags: List<String> = emptyList(),
+        tags: List<String>? = null,
     ): Snippet? {
         require(title.isNotBlank()) { "Snippet title must not be blank" }
         return mutex.withLock {
@@ -159,12 +162,16 @@ object SnippetLibraryManager {
                 existing.copy(
                     title = title,
                     body = body,
-                    tags = normalizeTags(tags),
+                    // Omitted tags preserve the existing set; an explicit empty
+                    // list is how a caller clears them.
+                    tags = tags?.let(::normalizeTags) ?: existing.tags,
                     updatedAt = clock(),
                 )
             val updated = current.map { if (it.id == id) edited else it }
-            _snippets.value = updated
+            // Persist BEFORE publishing: a failed write must not leave the
+            // in-memory library ahead of the disk copy.
             persist(updated)
+            _snippets.value = updated
             edited
         }
     }
@@ -177,8 +184,10 @@ object SnippetLibraryManager {
             if (updated.size == current.size) {
                 false
             } else {
-                _snippets.value = updated
+                // Persist BEFORE publishing: a failed write must not leave the
+                // in-memory library ahead of the disk copy.
                 persist(updated)
+                _snippets.value = updated
                 true
             }
         }
