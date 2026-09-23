@@ -190,52 +190,53 @@ object ProjectState {
                     // Keep the disk snapshot and its publication in one critical section. Locking
                     // only the final assignment still lets an update land after read and before
                     // publish, where the disk snapshot would overwrite that newer in-memory entry.
-                    val (validProjects, originalCount) = mutationLock.withLock {
-                        val json = file.readText()
-                        val projects =
-                            kotlinx.serialization.json.Json
-                                .decodeFromString<List<Project>>(json)
+                    val (validProjects, originalCount) =
+                        mutationLock.withLock {
+                            val json = file.readText()
+                            val projects =
+                                kotlinx.serialization.json.Json
+                                    .decodeFromString<List<Project>>(json)
 
-                        // Filter out projects whose directories no longer exist AND normalize names
-                        val validProjects =
-                            projects.mapNotNull { project ->
-                                val projectDir = java.io.File(project.path)
-                                val exists = projectDir.exists() && projectDir.isDirectory
-                                if (!exists) {
-                                    logger.debug(
-                                        LogCategory.FILE,
-                                        "Removing deleted project from recent",
-                                        mapOf(
-                                            "name" to project.name,
-                                            "path" to project.path,
-                                        ),
-                                    )
-                                    null
-                                } else {
-                                    // Normalize the name to handle any legacy full paths
-                                    val normalizedName = project.path.extractFileName()
-                                    if (normalizedName != project.name) {
+                            // Filter out projects whose directories no longer exist AND normalize names
+                            val validProjects =
+                                projects.mapNotNull { project ->
+                                    val projectDir = java.io.File(project.path)
+                                    val exists = projectDir.exists() && projectDir.isDirectory
+                                    if (!exists) {
                                         logger.debug(
                                             LogCategory.FILE,
-                                            "Normalizing project name",
-                                            mapOf("old" to project.name, "new" to normalizedName),
+                                            "Removing deleted project from recent",
+                                            mapOf(
+                                                "name" to project.name,
+                                                "path" to project.path,
+                                            ),
                                         )
+                                        null
+                                    } else {
+                                        // Normalize the name to handle any legacy full paths
+                                        val normalizedName = project.path.extractFileName()
+                                        if (normalizedName != project.name) {
+                                            logger.debug(
+                                                LogCategory.FILE,
+                                                "Normalizing project name",
+                                                mapOf("old" to project.name, "new" to normalizedName),
+                                            )
+                                        }
+                                        project.copy(name = normalizedName)
                                     }
-                                    project.copy(name = normalizedName)
                                 }
-                            }
 
-                        // A mutation that landed before this load must not be lost to the older
-                        // disk snapshot (the debounced save has not flushed it yet): in-memory
-                        // entries win, the disk fills in everything else. A removal in the same
-                        // narrow window would resurrect its entry - accepted: it is re-removed by
-                        // the next mutation, and losing an addition silently was worse.
-                        _recentProjects.value =
-                            (_recentProjects.value + validProjects)
-                                .distinctBy { it.path }
-                                .take(MAX_RECENT_PROJECTS)
-                        validProjects to projects.size
-                    }
+                            // A mutation that landed before this load must not be lost to the older
+                            // disk snapshot (the debounced save has not flushed it yet): in-memory
+                            // entries win, the disk fills in everything else. A removal in the same
+                            // narrow window would resurrect its entry - accepted: it is re-removed by
+                            // the next mutation, and losing an addition silently was worse.
+                            _recentProjects.value =
+                                (_recentProjects.value + validProjects)
+                                    .distinctBy { it.path }
+                                    .take(MAX_RECENT_PROJECTS)
+                            validProjects to projects.size
+                        }
                     logger.debug(
                         LogCategory.FILE,
                         "Loaded recent projects from disk",
