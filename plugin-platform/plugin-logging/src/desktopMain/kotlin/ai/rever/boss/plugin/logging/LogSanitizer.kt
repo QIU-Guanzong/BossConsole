@@ -437,7 +437,13 @@ object LogSanitizer {
      * Runs of text that are a credential by their own structure, wherever they
      * appear: a JWT (three base64url segments — the first is the base64url of a
      * JSON header, which is why every JWT begins `eyJ`), a GitHub token prefix,
-     * or a vendor `sk_`/`pk_` key prefix.
+     * a vendor `sk_`/`pk_` key prefix, or a Supabase `sb_publishable_`/`sb_secret_` key.
+     *
+     * The Supabase branch names the two published prefixes rather than any
+     * `sb_`, so an ordinary identifier is not masked. `sb_secret_` is the
+     * service_role replacement and bypasses row-level security. This pattern is the
+     * original: it is duplicated in `McpArgumentSanitizer.credentialShapePattern` and
+     * pinned against this one by `McpArgumentSanitizerCredentialShapeTest`.
      *
      * Each alternative is anchored on the left by a boundary that rules out word
      * characters and `.`, so a name that merely *contains* one of these prefixes
@@ -452,6 +458,7 @@ object LogSanitizer {
                 """eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*""" +
                 "|(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}" +
                 "|(?:sk|pk)[-_][A-Za-z0-9_-]{8,}" +
+                "|sb_(?:publishable|secret)_[A-Za-z0-9_-]{8,}" +
                 ")",
         )
 
@@ -670,7 +677,7 @@ object LogSanitizer {
      * - URLs
      * - Email addresses
      * - Bare hostnames (no protocol/path around them - DNS and proxy-connect failures)
-     * - Credentials recognisable by shape: JWTs, GitHub tokens, `sk_`/`pk_` keys
+     * - Credentials recognisable by shape: JWTs, GitHub tokens, `sk_`/`pk_` keys, Supabase `sb_` keys
      * - The value of a `name=value` pair whose name marks it sensitive
      *
      * @param message The exception message to sanitize
