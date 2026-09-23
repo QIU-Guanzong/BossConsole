@@ -261,7 +261,9 @@ window's active browser (the visible tab of the active main panel), and then eit
 - **PAGE** - that browser's web page has Chromium focus (JxBrowser `FocusGained` / `FocusLost`).
   Under HARDWARE_ACCELERATED the page is a native view, so clicking it moves no Compose focus;
   Chromium's own events are the only truthful signal. While the page has focus, find, reload and
-  print stay with the page's native key callback, which already serves them.
+  print stay with the page's native key callback, which already serves them. This half depends on
+  JxBrowser delivering `FocusLost` whenever the page gives up the keyboard, which is yet to be
+  confirmed live on every platform and rendering mode.
 - **CHROME** - Compose focus is inside the main panel (address bar, find bar), tracked by
   `MainPanelFocusTracker`.
 

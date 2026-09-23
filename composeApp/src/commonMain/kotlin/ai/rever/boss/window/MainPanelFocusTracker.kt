@@ -31,6 +31,14 @@ object MainPanelFocusTracker {
         }
     }
 
+    /**
+     * Forget [windowId]. Called when the window closes, so a window torn down without its panels'
+     * disposal cannot leave a focus record behind.
+     */
+    fun clearWindow(windowId: String) {
+        focusedPanels.remove(windowId)
+    }
+
     /** Whether any main panel in [windowId] has Compose focus. */
     fun hasFocus(windowId: String): Boolean = !focusedPanels[windowId].isNullOrEmpty()
 }

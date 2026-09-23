@@ -25,11 +25,13 @@ internal data class KeyboardContext(
  * `PressKeyCallback`) already serves while the page has focus: find (page-first, so a site
  * with its own find-in-page keeps it), reload and print.
  *
- * While the page holds the keyboard these stay unmatched here, exactly as they were before
- * BROWSER context could be reached in a main-window tab. Claiming them would either act a
- * second time or, for find, take the chord away from the page before it can call
- * `preventDefault()`. The chrome (address bar, find bar) has no native callback, so there the
- * interceptor serves them like any other BROWSER binding.
+ * While the page holds the keyboard these BROWSER bindings are skipped, so the chord matches
+ * exactly what it matched before BROWSER context could be reached in a main-window tab, when
+ * the context there was always GLOBAL: nothing, or a GLOBAL binding on the same chord (the VS
+ * Code preset's Cmd+P quick open is one). Claiming the BROWSER action would either act a second
+ * time or, for find, take the chord away from the page before it can call `preventDefault()`.
+ * The chrome (address bar, find bar) has no native callback, so there the interceptor serves
+ * them like any other BROWSER binding.
  */
 internal val PAGE_SERVED_ACTIONS =
     setOf(KeymapActions.BROWSER_FIND, KeymapActions.BROWSER_RELOAD, KeymapActions.BROWSER_PRINT)

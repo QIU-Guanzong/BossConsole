@@ -7,12 +7,14 @@ import ai.rever.boss.plugin.browser.BrowserKeyboardOwner
 import ai.rever.boss.plugin.browser.resolveBrowserKeyboardOwner
 import ai.rever.boss.utils.SystemUtils
 import java.awt.Canvas
+import java.awt.Container
 import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 
 /**
  * BossConsole#1566: BROWSER-context bindings could never match in a main-window browser tab,
@@ -104,11 +106,49 @@ class BrowserContextShortcutTest {
     fun `find, reload and print stay with the page's native key callback while the page has focus`() {
         // FluckEngine's PressKeyCallback serves these for a focused page; matching them here too
         // would act twice, and for find would take the chord before the page can pre-empt it.
+        //
+        // "Stay with" means the chord matches exactly what it matched before BROWSER context was
+        // reachable here, when the context was GLOBAL: nothing, or a GLOBAL binding on that chord.
         listOf(KeyEvent.VK_F, KeyEvent.VK_R, KeyEvent.VK_P).forEach { keyCode ->
             val action = actionFor(keyCode, owner = BrowserKeyboardOwner.PAGE)
             assertFalse(action in PAGE_SERVED_ACTIONS, "key $keyCode -> $action")
+            assertEquals(actionFor(keyCode, owner = BrowserKeyboardOwner.NONE), action, "key $keyCode")
         }
+        // BOSS Default has no GLOBAL binding on these, so there the page gets the chord alone.
+        assertNull(actionFor(KeyEvent.VK_F, owner = BrowserKeyboardOwner.PAGE))
+        assertNull(actionFor(KeyEvent.VK_R, owner = BrowserKeyboardOwner.PAGE))
     }
+
+    @Test
+    fun `a GLOBAL binding on a page-served chord keeps it, as it did before`() {
+        // VS Code: Cmd+P is quick open (GLOBAL), and there is no print binding at all.
+        val vsCode = KeymapPresets.getVSCodePreset().shortcuts.values
+        val page = resolveKeyboardContext(ShortcutContext.GLOBAL, BrowserKeyboardOwner.PAGE)
+        val global = resolveKeyboardContext(ShortcutContext.GLOBAL, BrowserKeyboardOwner.NONE)
+        assertEquals(
+            AWTKeyboardInterceptor.matchBinding(press(KeyEvent.VK_P), vsCode, global)?.binding?.actionId,
+            AWTKeyboardInterceptor.matchBinding(press(KeyEvent.VK_P), vsCode, page)?.binding?.actionId,
+        )
+    }
+
+    @Test
+    fun `the AWT focus walk recognises the Swing browser and BossTerm by ancestor class`() {
+        assertEquals(ShortcutContext.GLOBAL, detectContextFromAwtComponent(null))
+        assertEquals(ShortcutContext.GLOBAL, detectContextFromAwtComponent(Container()))
+        assertEquals(ShortcutContext.BROWSER, detectContextFromAwtComponent(child(FakeJxBrowserView())))
+        assertEquals(ShortcutContext.TERMINAL, detectContextFromAwtComponent(child(FakeTerminalPanel())))
+        // The nearest match wins walking up: a terminal inside a browser view is a terminal.
+        assertEquals(
+            ShortcutContext.TERMINAL,
+            detectContextFromAwtComponent(child(FakeTerminalPanel().also { FakeJxBrowserView().add(it) })),
+        )
+    }
+
+    private class FakeJxBrowserView : Container()
+
+    private class FakeTerminalPanel : Container()
+
+    private fun child(parent: Container): Container = Container().also { parent.add(it) }
 
     @Test
     fun `find, reload and print are served from the chrome, which has no native callback`() {

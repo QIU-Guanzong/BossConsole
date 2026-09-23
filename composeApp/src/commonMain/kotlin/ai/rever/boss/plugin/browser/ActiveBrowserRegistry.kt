@@ -258,16 +258,25 @@ object ActiveBrowserRegistry {
      */
     fun keyboardOwnerIn(
         windowId: String,
-        inWindowItself: Boolean = true,
-    ): BrowserKeyboardOwner =
-        resolveBrowserKeyboardOwner(
-            activeHandleId = _activeHandleIdByWindow.value[windowId],
-            focusedPageHandleIds =
+        inWindowItself: Boolean,
+    ): BrowserKeyboardOwner {
+        // Runs on the EDT for every modifier chord, so the usual case - no page focused anywhere -
+        // allocates nothing. Liveness is isLive, the same test the active handle passes: a handle
+        // whose transport died sends no FocusLost, and must not keep vetoing the window's browser.
+        val focusedHere =
+            if (focusedPages.isEmpty()) {
+                emptyList()
+            } else {
                 entries.values
-                    .filter { it.windowId == windowId && it.handleId in focusedPages }
-                    .map { it.handleId },
+                    .filter { it.windowId == windowId && it.handleId in focusedPages && isLive(it.handleId) }
+                    .map { it.handleId }
+            }
+        return resolveBrowserKeyboardOwner(
+            activeHandleId = _activeHandleIdByWindow.value[windowId],
+            focusedPageHandleIds = focusedHere,
             mainPanelHasComposeFocus = inWindowItself && MainPanelFocusTracker.hasFocus(windowId),
         )
+    }
 }
 
 /**

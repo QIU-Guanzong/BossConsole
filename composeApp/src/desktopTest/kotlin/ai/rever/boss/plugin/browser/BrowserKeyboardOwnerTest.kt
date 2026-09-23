@@ -1,6 +1,8 @@
 package ai.rever.boss.plugin.browser
 
 import ai.rever.boss.window.MainPanelFocusTracker
+import java.lang.reflect.Proxy
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -49,33 +51,107 @@ class BrowserKeyboardOwnerTest {
 
     @Test
     fun `main panel focus survives a handoff between split halves in either order`() {
-        val window = "owner-test-window"
         val left = Any()
         val right = Any()
 
         // Gain on the right reported before the loss on the left.
-        MainPanelFocusTracker.update(window, left, true)
-        MainPanelFocusTracker.update(window, right, true)
-        MainPanelFocusTracker.update(window, left, false)
-        assertTrue(MainPanelFocusTracker.hasFocus(window))
+        MainPanelFocusTracker.update(WINDOW, left, true)
+        MainPanelFocusTracker.update(WINDOW, right, true)
+        MainPanelFocusTracker.update(WINDOW, left, false)
+        assertTrue(MainPanelFocusTracker.hasFocus(WINDOW))
+        MainPanelFocusTracker.clearWindow(WINDOW)
 
-        // And the other way round.
-        MainPanelFocusTracker.update(window, left, false)
-        MainPanelFocusTracker.update(window, right, false)
-        MainPanelFocusTracker.update(window, left, true)
-        assertTrue(MainPanelFocusTracker.hasFocus(window))
+        // Loss on the left reported before the gain on the right: a gap, then focus again.
+        MainPanelFocusTracker.update(WINDOW, left, true)
+        MainPanelFocusTracker.update(WINDOW, left, false)
+        assertFalse(MainPanelFocusTracker.hasFocus(WINDOW))
+        MainPanelFocusTracker.update(WINDOW, right, true)
+        assertTrue(MainPanelFocusTracker.hasFocus(WINDOW))
 
-        MainPanelFocusTracker.update(window, left, false)
-        assertFalse(MainPanelFocusTracker.hasFocus(window))
+        MainPanelFocusTracker.update(WINDOW, right, false)
+        assertFalse(MainPanelFocusTracker.hasFocus(WINDOW))
     }
 
     @Test
-    fun `main panel focus is per window`() {
+    fun `main panel focus is per window and a closed window is forgotten`() {
         val panel = Any()
-        MainPanelFocusTracker.update("owner-test-w1", panel, true)
-        assertTrue(MainPanelFocusTracker.hasFocus("owner-test-w1"))
-        assertFalse(MainPanelFocusTracker.hasFocus("owner-test-w2"))
-        MainPanelFocusTracker.update("owner-test-w1", panel, false)
-        assertFalse(MainPanelFocusTracker.hasFocus("owner-test-w1"))
+        MainPanelFocusTracker.update(WINDOW, panel, true)
+        assertTrue(MainPanelFocusTracker.hasFocus(WINDOW))
+        assertFalse(MainPanelFocusTracker.hasFocus(OTHER_WINDOW))
+        MainPanelFocusTracker.clearWindow(WINDOW)
+        assertFalse(MainPanelFocusTracker.hasFocus(WINDOW))
+    }
+
+    // The registry half: real registrations through a proxy handle, as BrowserPrintingTest does.
+
+    @Test
+    fun `the registry answers from its own registrations and page focus`() {
+        register("kb-active", WINDOW, panelActive = true)
+        register("kb-background", WINDOW, panelActive = false)
+        register("kb-elsewhere", OTHER_WINDOW, panelActive = true)
+        MainPanelFocusTracker.update(WINDOW, this, true)
+
+        assertEquals(BrowserKeyboardOwner.CHROME, ActiveBrowserRegistry.keyboardOwnerIn(WINDOW, inWindowItself = true))
+        // A dialog window owned by this one: its stale Compose focus must not count.
+        assertEquals(BrowserKeyboardOwner.NONE, ActiveBrowserRegistry.keyboardOwnerIn(WINDOW, inWindowItself = false))
+
+        // A page focused in ANOTHER window does not touch this one.
+        ActiveBrowserRegistry.setPageFocused("kb-elsewhere", true)
+        assertEquals(BrowserKeyboardOwner.CHROME, ActiveBrowserRegistry.keyboardOwnerIn(WINDOW, inWindowItself = true))
+
+        // The background half's page has the keyboard: not this window's shortcut target.
+        ActiveBrowserRegistry.setPageFocused("kb-background", true)
+        assertEquals(BrowserKeyboardOwner.NONE, ActiveBrowserRegistry.keyboardOwnerIn(WINDOW, inWindowItself = true))
+
+        // Unregistering clears page focus, so the veto goes with it.
+        ActiveBrowserRegistry.unregister("kb-background")
+        assertEquals(BrowserKeyboardOwner.CHROME, ActiveBrowserRegistry.keyboardOwnerIn(WINDOW, inWindowItself = true))
+
+        ActiveBrowserRegistry.setPageFocused("kb-active", true)
+        assertEquals(BrowserKeyboardOwner.PAGE, ActiveBrowserRegistry.keyboardOwnerIn(WINDOW, inWindowItself = false))
+    }
+
+    @Test
+    fun `a dead handle's focused page does not veto the window's browser`() {
+        register("kb-active", WINDOW, panelActive = true)
+        register("kb-dead", WINDOW, panelActive = false) { false }
+        MainPanelFocusTracker.update(WINDOW, this, true)
+        ActiveBrowserRegistry.setPageFocused("kb-dead", true)
+        assertEquals(BrowserKeyboardOwner.CHROME, ActiveBrowserRegistry.keyboardOwnerIn(WINDOW, inWindowItself = true))
+    }
+
+    private val registered = mutableListOf<String>()
+
+    private fun register(
+        id: String,
+        windowId: String,
+        panelActive: Boolean,
+        isValid: () -> Boolean = { true },
+    ) {
+        val handle =
+            Proxy.newProxyInstance(
+                BrowserHandle::class.java.classLoader,
+                arrayOf(BrowserHandle::class.java),
+            ) { _, method, _ ->
+                when (method.name) {
+                    "getId" -> id
+                    "isValid" -> isValid()
+                    else -> error("Unexpected call ${method.name}")
+                }
+            } as BrowserHandle
+        ActiveBrowserRegistry.register(handle, windowId, inMainPanel = true, panelActive = panelActive)
+        registered += id
+    }
+
+    @AfterTest
+    fun tearDown() {
+        registered.forEach(ActiveBrowserRegistry::unregister)
+        MainPanelFocusTracker.clearWindow(WINDOW)
+        MainPanelFocusTracker.clearWindow(OTHER_WINDOW)
+    }
+
+    private companion object {
+        const val WINDOW = "owner-test-w1"
+        const val OTHER_WINDOW = "owner-test-w2"
     }
 }

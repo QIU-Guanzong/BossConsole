@@ -282,6 +282,7 @@ fun ApplicationScope.BossWindow(
             onDispose {
                 WindowFocusManager.unregisterWindow(windowState.id)
                 AWTKeyboardInterceptor.unregisterWindow(window)
+                MainPanelFocusTracker.clearWindow(windowState.id)
                 MenuActionsHandler.cleanupWindow(windowState.id)
             }
         }
