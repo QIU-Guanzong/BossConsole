@@ -180,6 +180,24 @@ object ProjectState {
             }
         }
 
+    /**
+     * Write any debounced save out now. Called from the shutdown sequence: a project opened or
+     * removed within [SAVE_DEBOUNCE_MS] of quitting would otherwise be lost, the exact window
+     * `RecentFilesManager.flushPendingSaves` was added for. Same idiom: cancel the pending job
+     * under [saveJobLock], and only then write - a cancelled job can still be mid-flight, so
+     * the lock is what makes "cancelled" mean "will not write after us".
+     */
+    suspend fun flushPendingSaves() {
+        val pending =
+            synchronized(saveJobLock) {
+                val active = saveJob?.isActive == true
+                saveJob?.cancel()
+                saveJob = null
+                active
+            }
+        if (pending) saveImmediately()
+    }
+
     private const val SAVE_DEBOUNCE_MS = 5000L
 
     private suspend fun loadRecentProjects() =

@@ -123,6 +123,22 @@ object DashboardStatsManager {
     }
 
     /**
+     * Write any debounced save out now, from the shutdown sequence - a stat recorded within
+     * [SAVE_DEBOUNCE_MS] of quitting would otherwise be lost. Same idiom as
+     * `RecentFilesManager.flushPendingSaves`.
+     */
+    suspend fun flushPendingSaves() {
+        val pending =
+            synchronized(saveJobLock) {
+                val active = saveJob?.isActive == true
+                saveJob?.cancel()
+                saveJob = null
+                active
+            }
+        if (pending) saveImmediately()
+    }
+
+    /**
      * Immediately save stats to disk (bypasses debounce).
      */
     private suspend fun saveImmediately() =
