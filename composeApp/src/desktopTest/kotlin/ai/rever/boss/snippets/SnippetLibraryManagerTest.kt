@@ -176,6 +176,12 @@ class SnippetLibraryManagerTest {
         runBlocking {
             SnippetLibraryManager.clock = { 1_000L }
             repeat(10) { SnippetLibraryManager.add("N$it", "body") }
-            assertEquals(10, SnippetLibraryManager.snippets.value.map { it.id }.toSet().size)
+            assertEquals(
+                10,
+                SnippetLibraryManager.snippets.value
+                    .map { it.id }
+                    .toSet()
+                    .size,
+            )
         }
 }
