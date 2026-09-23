@@ -65,7 +65,7 @@ object NotificationCenter {
         try {
             if (storageFile.exists()) {
                 val store = json.decodeFromString(NotificationStore.serializer(), storageFile.readText())
-                _notifications.value = store.notifications.take(MAX_ENTRIES)
+                _notifications.value = store.notifications.sortedByDescending { it.createdAt }.take(MAX_ENTRIES)
             } else {
                 _notifications.value = emptyList()
             }
@@ -158,6 +158,7 @@ object NotificationCenter {
                 @Suppress("TooGenericExceptionCaught") e: Exception,
             ) {
                 logger.warn(LogCategory.SYSTEM, "Failed to save notifications", error = e)
+                throw e
             }
         }
 
