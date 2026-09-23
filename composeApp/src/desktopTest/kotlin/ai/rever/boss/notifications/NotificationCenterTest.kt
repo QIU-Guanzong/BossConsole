@@ -147,13 +147,13 @@ class NotificationCenterTest {
 
         assertEquals(NotificationCenter.MAX_ENTRIES, NotificationCenter.notifications.value.size)
         assertEquals(
-            "n0",
+            "n${NotificationCenter.MAX_ENTRIES + 4}",
             NotificationCenter.notifications.value
                 .first()
                 .id,
         )
         assertEquals(
-            "n${NotificationCenter.MAX_ENTRIES - 1}",
+            "n5",
             NotificationCenter.notifications.value
                 .last()
                 .id,
