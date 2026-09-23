@@ -203,4 +203,14 @@ class BrowserPinchTest {
         assertEquals(2, sent.get())
         assertEquals(listOf(false), answers)
     }
+
+    @Test
+    fun `an answered offer gives its slot back`() {
+        // A leaked slot would leave every later pinch skipping the page, with the cap test above
+        // still green.
+        val offers = PinchOffers(maxPending = 1, deadlineMs = 5_000)
+        val answers = mutableListOf<Boolean>()
+        repeat(3) { offers.offer(send = { answer -> answer(true) }, onAnswer = { answers += it }) }
+        assertEquals(listOf(true, true, true), answers)
+    }
 }

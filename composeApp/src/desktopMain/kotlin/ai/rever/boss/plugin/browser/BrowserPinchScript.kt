@@ -78,7 +78,9 @@ internal object BrowserPinchScript {
             (function () {
               try {
                 var win = window;
-                var root0 = document.documentElement;
+                // The element whose client box is the viewport: body in quirks mode, where
+                // documentElement is only as tall as the content.
+                var root0 = document.compatMode === 'BackCompat' && document.body ? document.body : document.documentElement;
                 // clientWidth, not innerWidth: innerWidth counts a classic scrollbar, and its last
                 // pixel is past the last point elementFromPoint can hit.
                 var x = Math.max(0, Math.min(win.innerWidth * $fx, root0.clientWidth - 1));
@@ -169,12 +171,14 @@ internal class PinchOffers(
         send: (answer: (claimed: Boolean) -> Unit) -> Unit,
         onAnswer: (claimed: Boolean) -> Unit,
     ) {
-        if (pending.get() >= maxPending) {
+        // Claim a slot first and give it back if over the cap, so two racing offers cannot both
+        // pass a check and then both take a slot.
+        if (pending.incrementAndGet() > maxPending) {
+            pending.decrementAndGet()
             onAnswer(false)
             return
         }
         val answer = CompletableFuture<Boolean>()
-        pending.incrementAndGet()
         answer
             .completeOnTimeout(false, deadlineMs, TimeUnit.MILLISECONDS)
             .whenComplete { claimed, _ ->

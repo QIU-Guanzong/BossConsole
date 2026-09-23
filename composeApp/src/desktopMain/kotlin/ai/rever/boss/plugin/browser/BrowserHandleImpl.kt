@@ -598,7 +598,9 @@ internal class BrowserHandleImpl(
      * [pageInjectDispatcher], which would queue every delta behind a stalled renderer.
      */
     private fun onPinchMagnify(magnification: Double) {
-        if (!magnification.isFinite()) return
+        // Zero arrives at a gesture's begin and end phases and moves nothing, so it is not worth
+        // an offer slot or a page event.
+        if (!magnification.isFinite() || magnification == 0.0) return
         val pointer = pointerInContentPane()
         val bounds = browserViewBoundsInWindow
         val density = browserViewDensity
@@ -625,9 +627,18 @@ internal class BrowserHandleImpl(
             pointerInsideBounds = pointerInsideBounds,
         )
 
-    // Runs the offer script without waiting on the renderer. Never throws: the browser can close
-    // between the gate and this call, and that counts as declined.
+    // Runs the offer script without waiting on the renderer, and off the EDT because mainFrame()
+    // is an IPC round trip and deltas arrive at trackpad rate. If that thread is busy the offer's
+    // deadline answers for it. Never throws: the browser can close between the gate and this
+    // call, and that counts as declined.
     private fun sendPinchOffer(
+        script: String,
+        answer: (Boolean) -> Unit,
+    ) {
+        pageInjectScope.launch(pageInjectDispatcher) { sendPinchOfferNow(script, answer) }
+    }
+
+    private fun sendPinchOfferNow(
         script: String,
         answer: (Boolean) -> Unit,
     ) {
@@ -656,18 +667,21 @@ internal class BrowserHandleImpl(
                 mapOf("handleId" to id),
             )
         }
-        if (claimed) {
-            pinchZoomAccumulator.reset()
-            return
-        }
-        val step = pinchZoomAccumulator.add(magnification) ?: return
-        // The answer can arrive up to the offer deadline after the gate passed, by which time the
-        // tab may be closed or the pointer somewhere else. Gate again right before zooming.
+        // On the EDT, the only thread that touches the accumulator, so its updates stay in the
+        // order they are applied. The answer can arrive up to the offer deadline after the gate
+        // passed, by which time the tab may be closed or the pointer somewhere else, so the gate
+        // runs again, and BEFORE the accumulator: a step it had already completed and zeroed
+        // would otherwise be thrown away along with the delta.
         SwingUtilities.invokeLater {
+            if (claimed) {
+                pinchZoomAccumulator.reset()
+                return@invokeLater
+            }
             if (!pinchGateOpen(pointerInsideBrowserView())) return@invokeLater
-            when (step) {
+            when (pinchZoomAccumulator.add(magnification)) {
                 PinchZoomAccumulator.Step.IN -> zoomIn()
                 PinchZoomAccumulator.Step.OUT -> zoomOut()
+                null -> Unit
             }
         }
     }
@@ -679,9 +693,10 @@ internal class BrowserHandleImpl(
         // Shared by every handle, not one per handle: every browser in a window hears every
         // delta, so a per-handle throttle still wrote one line per view per interval.
         val skipped = pinchSuppressedSinceLog.incrementAndGet()
-        val now = System.currentTimeMillis()
+        // nanoTime, not currentTimeMillis: a wall clock stepped backwards would mute the line.
+        val now = System.nanoTime()
         val last = pinchSuppressedLoggedAt.get()
-        if (now - last < PINCH_SUPPRESSED_LOG_INTERVAL_MS || !pinchSuppressedLoggedAt.compareAndSet(last, now)) return
+        if (now - last < PINCH_SUPPRESSED_LOG_INTERVAL_NS || !pinchSuppressedLoggedAt.compareAndSet(last, now)) return
         pinchSuppressedSinceLog.addAndGet(-skipped)
         logger.debug(
             LogCategory.BROWSER,
@@ -4446,10 +4461,11 @@ internal class BrowserHandleImpl(
         private const val MAX_PENDING_PINCH_OFFERS = 8
 
         /** At most one "Pinch zoom suppressed" line, across all handles, per this interval. */
-        private const val PINCH_SUPPRESSED_LOG_INTERVAL_MS = 1_000L
+        private const val PINCH_SUPPRESSED_LOG_INTERVAL_NS = 1_000_000_000L
 
-        // When "Pinch zoom suppressed" was last written, and how many suppressions it covers.
-        private val pinchSuppressedLoggedAt = AtomicLong(0L)
+        // When "Pinch zoom suppressed" was last written (nanoTime), and how many suppressions it
+        // covers. Starts an interval in the past so the first suppression is always logged.
+        private val pinchSuppressedLoggedAt = AtomicLong(System.nanoTime() - PINCH_SUPPRESSED_LOG_INTERVAL_NS)
         private val pinchSuppressedSinceLog = AtomicInteger(0)
 
         /**
