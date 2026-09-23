@@ -110,11 +110,12 @@ class SubstituteProjectPathTest {
         val projectPath = """C:\Work && Projects\demo"""
         val separator = CommandProcessor.normalizeCommand(" && ")
 
-        val result = WorkspacePlaceholders.processPlaceholders(
-            "cd {projectPath} && claude",
-            projectPath,
-            quoteProjectPath = true,
-        )
+        val result =
+            WorkspacePlaceholders.processPlaceholders(
+                "cd {projectPath} && claude",
+                projectPath,
+                quoteProjectPath = true,
+            )
 
         assertEquals(
             "cd ${CommandProcessor.quotePath(projectPath)}${separator}claude",
