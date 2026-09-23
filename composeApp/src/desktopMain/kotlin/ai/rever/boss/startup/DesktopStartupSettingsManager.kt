@@ -78,36 +78,32 @@ actual object StartupSettingsManager {
             // publish and bump the epoch between this load's epoch snapshot and its disk read,
             // and the fence would then pass a snapshot that predates the update.
             persistenceLock.withLock {
-                loadSettingsFromDisk()
+                // Fence the read: every updateSettings that runs while it is in flight bumps
+                // [mutationEpoch], which makes the snapshot this load ends up holding stale.
+                // A stale snapshot is discarded by applyLoadedIfUnchanged below instead of
+                // being published over the newer change the mutation already made.
+                val epochAtStart = currentMutationEpoch()
+                try {
+                    settingsFile.parentFile?.mkdirs()
+
+                    if (settingsFile.exists()) {
+                        val content = settingsFile.readText()
+                        val settings = json.decodeFromString<StartupSettings>(content)
+                        applyLoadedIfUnchanged(settings, epochAtStart)
+                        logger.debug(LogCategory.SYSTEM, "Loaded settings")
+                    } else {
+                        // Create default settings file
+                        createDefaultFile(epochAtStart)
+                        logger.debug(LogCategory.SYSTEM, "Created default settings file")
+                    }
+                } catch (
+                    @Suppress("TooGenericExceptionCaught") e: Exception,
+                ) {
+                    logger.warn(LogCategory.SYSTEM, "Error loading settings", error = e)
+                    // Keep default settings on error
+                }
             }
         }
-
-    private suspend fun loadSettingsFromDisk() {
-        // Fence the read: every updateSettings that runs while it is in flight bumps
-        // [mutationEpoch], which makes the snapshot this load ends up holding stale.
-        // A stale snapshot is discarded by applyLoadedIfUnchanged below instead of
-        // being published over the newer change the mutation already made.
-        val epochAtStart = currentMutationEpoch()
-        try {
-            settingsFile.parentFile?.mkdirs()
-
-            if (settingsFile.exists()) {
-                val content = settingsFile.readText()
-                val settings = json.decodeFromString<StartupSettings>(content)
-                applyLoadedIfUnchanged(settings, epochAtStart)
-                logger.debug(LogCategory.SYSTEM, "Loaded settings")
-            } else {
-                // Create default settings file
-                createDefaultFile(epochAtStart)
-                logger.debug(LogCategory.SYSTEM, "Created default settings file")
-            }
-        } catch (
-            @Suppress("TooGenericExceptionCaught") e: Exception,
-        ) {
-            logger.warn(LogCategory.SYSTEM, "Error loading settings", error = e)
-            // Keep default settings on error
-        }
-    }
 
     /**
      * Load settings from disk. Called automatically on first access.
