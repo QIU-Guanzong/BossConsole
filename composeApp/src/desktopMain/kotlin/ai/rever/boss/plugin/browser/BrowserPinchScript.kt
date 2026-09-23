@@ -1,5 +1,8 @@
 package ai.rever.boss.plugin.browser
 
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ln
 
 /**
@@ -19,6 +22,12 @@ import kotlin.math.ln
  * The event is synthetic, so `isTrusted` is false. Pages that only act on trusted wheel events
  * decline it and fall back to page zoom, which is today's behaviour, so the change cannot make
  * those worse.
+ *
+ * A page whose wheel listener calls `preventDefault()` on every wheel event, whatever `ctrlKey`
+ * says (some scroll-locks and custom scrollers do), claims every pinch, so page zoom stops
+ * working there. Chrome behaves the same on such a page, since it too only zooms when the page
+ * lets the event through. BrowserHandleImpl logs each change between claimed and declined so the
+ * case can be told apart from a broken gate.
  */
 internal object BrowserPinchScript {
     // Nesting levels of shadow roots and iframes the target search looks through. Real pages
@@ -30,11 +39,17 @@ internal object BrowserPinchScript {
      * `-100 * ln(scale)`, where macOS reports `scale - 1` as the event's magnification. Negative
      * when pinching out, matching Ctrl+scroll-up, which every canvas app reads as zoom in.
      *
-     * Magnification is clamped above -1 because `ln` is undefined at and below zero scale; no
-     * real event gets near it, but a NaN or infinite literal would be a JS syntax error that
-     * silently declines the pinch.
+     * Magnification is clamped above -1 because `ln` is undefined at and below zero scale, and a
+     * non-finite one counts as no movement. `coerceAtLeast` alone passes NaN straight through,
+     * and `NaN` or `Infinity` spliced into the script is valid JS, so it would not fail loudly:
+     * it would dispatch an event with a nonsense delta for the page to act on.
      */
-    fun wheelDeltaY(magnification: Double): Double = -100.0 * ln(1.0 + magnification.coerceAtLeast(-0.99))
+    fun wheelDeltaY(magnification: Double): Double =
+        if (magnification.isFinite()) -100.0 * ln(1.0 + magnification.coerceAtLeast(-0.99)) else 0.0
+
+    // A fraction the script can use: in 0..1, with unknown or non-finite meaning the middle.
+    private fun usableFraction(fraction: Double?): Double =
+        if (fraction == null || !fraction.isFinite()) 0.5 else fraction.coerceIn(0.0, 1.0)
 
     /**
      * JavaScript that dispatches the pinch as a cancelable Ctrl+wheel event at the pointer and
@@ -57,14 +72,17 @@ internal object BrowserPinchScript {
         fractionX: Double?,
         fractionY: Double?,
     ): String {
-        val fx = (fractionX ?: 0.5).coerceIn(0.0, 1.0)
-        val fy = (fractionY ?: 0.5).coerceIn(0.0, 1.0)
+        val fx = usableFraction(fractionX)
+        val fy = usableFraction(fractionY)
         return """
             (function () {
               try {
                 var win = window;
-                var x = win.innerWidth * $fx;
-                var y = win.innerHeight * $fy;
+                var root0 = document.documentElement;
+                // clientWidth, not innerWidth: innerWidth counts a classic scrollbar, and its last
+                // pixel is past the last point elementFromPoint can hit.
+                var x = Math.max(0, Math.min(win.innerWidth * $fx, root0.clientWidth - 1));
+                var y = Math.max(0, Math.min(win.innerHeight * $fy, root0.clientHeight - 1));
                 var target = document.elementFromPoint(x, y) || document.body || document.documentElement;
                 for (var depth = 0; target && depth < $MAX_DESCENT; depth++) {
                   var root = target.shadowRoot;
@@ -124,4 +142,45 @@ internal fun pointerFractionInBounds(
         (pointerPx.x - boundsPx.left) / boundsPx.width,
         (pointerPx.y - boundsPx.top) / boundsPx.height,
     )
+}
+
+/**
+ * Offers of pinch deltas to the page that have not been answered yet, each with a deadline.
+ *
+ * Page zoom is answered by the browser process, so it used to work however busy the page was.
+ * An offer waits on the renderer, which a busy page can stall. So each offer is answered
+ * "declined" once [deadlineMs] passes, and while [maxPending] offers are waiting, a new delta
+ * skips the page and is declined at once. A stalled renderer can then neither swallow a
+ * gesture nor pile up offers to replay as a burst of zoom steps when it recovers.
+ */
+internal class PinchOffers(
+    private val maxPending: Int,
+    private val deadlineMs: Long,
+) {
+    private val pending = AtomicInteger(0)
+
+    /**
+     * Offers one delta. [send] receives a callback to report the page's answer with. [onAnswer]
+     * is called exactly once: with that answer, or with false at the deadline or when the cap is
+     * reached. An answer that arrives after the deadline is dropped. [send] must not throw; it
+     * reports a failure by answering false.
+     */
+    fun offer(
+        send: (answer: (claimed: Boolean) -> Unit) -> Unit,
+        onAnswer: (claimed: Boolean) -> Unit,
+    ) {
+        if (pending.get() >= maxPending) {
+            onAnswer(false)
+            return
+        }
+        val answer = CompletableFuture<Boolean>()
+        pending.incrementAndGet()
+        answer
+            .completeOnTimeout(false, deadlineMs, TimeUnit.MILLISECONDS)
+            .whenComplete { claimed, _ ->
+                pending.decrementAndGet()
+                onAnswer(claimed == true)
+            }
+        send { claimed -> answer.complete(claimed) }
+    }
 }

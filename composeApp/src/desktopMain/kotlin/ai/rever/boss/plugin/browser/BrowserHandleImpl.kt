@@ -120,10 +120,8 @@ import java.awt.GraphicsEnvironment
 import java.awt.Window
 import java.lang.ref.WeakReference
 import java.util.UUID
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -539,18 +537,6 @@ internal class BrowserHandleImpl(
     }
 
     /**
-     * Where in this view the pointer sits, as a fraction of its width and height, for aiming a
-     * pinch at the element under the cursor. Null when unknown, for the reasons
-     * [pointerInsideBrowserView] gives.
-     */
-    private fun pointerFractionInBrowserView(): androidx.compose.ui.geometry.Offset? {
-        val bounds = browserViewBoundsInWindow ?: return null
-        return pointerInContentPane()?.let {
-            pointerFractionInBounds(boundsPx = bounds, pointerLogical = it, density = browserViewDensity)
-        }
-    }
-
-    /**
      * The pointer in the host window's content pane, in AWT logical units, or null when there is
      * no window or no pointer. See [pointerInsideBrowserView] for why the content pane.
      */
@@ -588,79 +574,101 @@ internal class BrowserHandleImpl(
     // Smooths the magnification deltas the page declined into page-zoom steps.
     private val pinchZoomAccumulator = PinchZoomAccumulator()
 
-    // Pinch deltas offered to the page and not yet answered. Bounds what a stalled renderer can
-    // pile up: past the cap a delta goes straight to page zoom instead of joining the queue.
-    private val pendingPinchOffers = AtomicInteger(0)
+    // Offers of pinch deltas to the page, bounded and on a deadline. See [PinchOffers].
+    private val pinchOffers = PinchOffers(maxPending = MAX_PENDING_PINCH_OFFERS, deadlineMs = PINCH_OFFER_DEADLINE_MS)
 
-    // When "Pinch zoom suppressed" was last logged. Every browser in a window hears every
-    // delta, so unthrottled the line is written (views - 1) times per event, dozens of times a
-    // second, and buries the one occurrence worth reading.
-    @Volatile private var lastPinchSuppressedLogAt = 0L
+    // The page's last answer to a pinch offer, so a change of answer is logged once rather than
+    // every delta. A page that claims every wheel event (see [BrowserPinchScript]) shows up here
+    // as "claimed" and nothing else, which tells it apart from a gate that never opens.
+    @Volatile private var lastPinchClaimed: Boolean? = null
 
     /**
      * One macOS pinch delta, arriving on the EDT from the window-wide gesture listener.
      *
-     * Gated first: only the browser under the pointer may act on it. Logs suppressions with both
-     * gate inputs, because a wrong gate presents as pinch silently not working (or zooming a
-     * non-hovered view) and the two causes are indistinguishable from the outside.
+     * Gated first: only the browser under the pointer may act on it. Then offered to the page as
+     * a Ctrl+wheel event, the way Chrome and Safari deliver a pinch, so a canvas app zooms its
+     * canvas instead of BOSS zooming the whole page (#1565). Only a delta the page declines
+     * feeds page zoom.
      *
-     * Then offered to the page as a Ctrl+wheel event, the way Chrome and Safari deliver a pinch,
-     * so a canvas app zooms its canvas instead of BOSS zooming the whole page (#1565). Only a
-     * delta the page declines feeds page zoom.
+     * The pointer is read once, and the gate and the aim both use that read. Two reads could
+     * disagree if the pointer moved in between: the gate would pass on the first, and the aim
+     * would be clamped to a viewport edge on the second.
      *
-     * The offer is asynchronous and on a deadline, and deliberately not a blocking call on
-     * [pageInjectDispatcher]. Page zoom is answered by the browser process, so it used to work
-     * however busy the page was. A blocking offer would queue every delta behind a stalled
-     * renderer, swallow the gesture, then replay it as a burst of zoom steps once the page
-     * recovered. On a deadline, a page that cannot answer in time is treated as having
-     * declined, which is the old behaviour.
+     * The offer is asynchronous and bounded, see [PinchOffers]. It is not a blocking call on
+     * [pageInjectDispatcher], which would queue every delta behind a stalled renderer.
      */
     private fun onPinchMagnify(magnification: Double) {
-        val geometric = pointerInsideBrowserView()
-        if (!shouldAllowPinch(
-                mode = JxBrowserConfig.renderingMode,
-                isValid = isValid,
-                pointerOverComposeView = pointerOverBrowserView,
-                pointerInsideBounds = geometric,
-            )
-        ) {
+        if (!magnification.isFinite()) return
+        val pointer = pointerInContentPane()
+        val bounds = browserViewBoundsInWindow
+        val density = browserViewDensity
+        val geometric =
+            if (pointer != null && bounds != null) pointerInsideBounds(bounds, pointer, density) else null
+        if (!pinchGateOpen(geometric)) {
             logPinchSuppressed(magnification, geometric)
             return
         }
-        if (pendingPinchOffers.get() >= MAX_PENDING_PINCH_OFFERS) {
-            applyDeclinedPinch(magnification)
-            return
-        }
-        val fraction = pointerFractionInBrowserView()
+        val fraction =
+            if (pointer != null && bounds != null) pointerFractionInBounds(bounds, pointer, density) else null
         val script = BrowserPinchScript.dispatch(magnification, fraction?.x?.toDouble(), fraction?.y?.toDouble())
-        val answer = CompletableFuture<Boolean>()
-        pendingPinchOffers.incrementAndGet()
-        answer
-            .completeOnTimeout(false, PINCH_OFFER_DEADLINE_MS, TimeUnit.MILLISECONDS)
-            .whenComplete { claimed, _ ->
-                pendingPinchOffers.decrementAndGet()
-                if (claimed == true) pinchZoomAccumulator.reset() else applyDeclinedPinch(magnification)
-            }
+        pinchOffers.offer(
+            send = { answer -> sendPinchOffer(script, answer) },
+            onAnswer = { claimed -> onPinchAnswer(magnification, claimed) },
+        )
+    }
+
+    private fun pinchGateOpen(pointerInsideBounds: Boolean?): Boolean =
+        shouldAllowPinch(
+            mode = JxBrowserConfig.renderingMode,
+            isValid = isValid,
+            pointerOverComposeView = pointerOverBrowserView,
+            pointerInsideBounds = pointerInsideBounds,
+        )
+
+    // Runs the offer script without waiting on the renderer. Never throws: the browser can close
+    // between the gate and this call, and that counts as declined.
+    private fun sendPinchOffer(
+        script: String,
+        answer: (Boolean) -> Unit,
+    ) {
         try {
             val frame = browser.mainFrame().orElse(null)
             if (frame == null) {
-                answer.complete(false)
+                answer(false)
             } else {
-                frame.executeJavaScript(script) { result: Any? -> answer.complete(result == true) }
+                frame.executeJavaScript(script) { result: Any? -> answer(result == true) }
             }
         } catch (e: Exception) {
-            // The browser can close between the gate and the call.
             logger.debug(LogCategory.BROWSER, "Pinch offer to page failed", mapOf("error" to e.toString()))
-            answer.complete(false)
+            answer(false)
         }
     }
 
-    // A pinch delta the page did not claim: toward a page-zoom step, as before #1565.
-    private fun applyDeclinedPinch(magnification: Double) {
-        when (pinchZoomAccumulator.add(magnification)) {
-            PinchZoomAccumulator.Step.IN -> SwingUtilities.invokeLater { zoomIn() }
-            PinchZoomAccumulator.Step.OUT -> SwingUtilities.invokeLater { zoomOut() }
-            null -> Unit
+    private fun onPinchAnswer(
+        magnification: Double,
+        claimed: Boolean,
+    ) {
+        if (lastPinchClaimed != claimed) {
+            lastPinchClaimed = claimed
+            logger.debug(
+                LogCategory.BROWSER,
+                if (claimed) "Page claimed pinch" else "Page declined pinch, using page zoom",
+                mapOf("handleId" to id),
+            )
+        }
+        if (claimed) {
+            pinchZoomAccumulator.reset()
+            return
+        }
+        val step = pinchZoomAccumulator.add(magnification) ?: return
+        // The answer can arrive up to the offer deadline after the gate passed, by which time the
+        // tab may be closed or the pointer somewhere else. Gate again right before zooming.
+        SwingUtilities.invokeLater {
+            if (!pinchGateOpen(pointerInsideBrowserView())) return@invokeLater
+            when (step) {
+                PinchZoomAccumulator.Step.IN -> zoomIn()
+                PinchZoomAccumulator.Step.OUT -> zoomOut()
+            }
         }
     }
 
@@ -668,9 +676,13 @@ internal class BrowserHandleImpl(
         magnification: Double,
         geometric: Boolean?,
     ) {
+        // Shared by every handle, not one per handle: every browser in a window hears every
+        // delta, so a per-handle throttle still wrote one line per view per interval.
+        val skipped = pinchSuppressedSinceLog.incrementAndGet()
         val now = System.currentTimeMillis()
-        if (now - lastPinchSuppressedLogAt < PINCH_SUPPRESSED_LOG_INTERVAL_MS) return
-        lastPinchSuppressedLogAt = now
+        val last = pinchSuppressedLoggedAt.get()
+        if (now - last < PINCH_SUPPRESSED_LOG_INTERVAL_MS || !pinchSuppressedLoggedAt.compareAndSet(last, now)) return
+        pinchSuppressedSinceLog.addAndGet(-skipped)
         logger.debug(
             LogCategory.BROWSER,
             "Pinch zoom suppressed",
@@ -681,6 +693,7 @@ internal class BrowserHandleImpl(
                 "pointerInsideBounds" to geometric.toString(),
                 "bounds" to browserViewBoundsInWindow.toString(),
                 "valid" to isValid.toString(),
+                "suppressedSinceLastLine" to skipped.toString(),
             ),
         )
     }
@@ -4432,8 +4445,12 @@ internal class BrowserHandleImpl(
         /** Unanswered pinch offers allowed at once; about a tenth of a second of trackpad events. */
         private const val MAX_PENDING_PINCH_OFFERS = 8
 
-        /** At most one "Pinch zoom suppressed" line per handle per this interval. */
+        /** At most one "Pinch zoom suppressed" line, across all handles, per this interval. */
         private const val PINCH_SUPPRESSED_LOG_INTERVAL_MS = 1_000L
+
+        // When "Pinch zoom suppressed" was last written, and how many suppressions it covers.
+        private val pinchSuppressedLoggedAt = AtomicLong(0L)
+        private val pinchSuppressedSinceLog = AtomicInteger(0)
 
         /**
          * Popup browsers we are currently waiting to capture an upload body for.

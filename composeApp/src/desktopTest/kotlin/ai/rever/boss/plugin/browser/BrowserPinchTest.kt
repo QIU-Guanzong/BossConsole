@@ -3,9 +3,13 @@ package ai.rever.boss.plugin.browser
 import ai.rever.boss.utils.PinchZoomAccumulator
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ln
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -29,6 +33,35 @@ class BrowserPinchTest {
     @Test
     fun `deltaY follows Chromium's -100 ln(scale) mapping`() {
         assertEquals(-100.0 * ln(1.05), BrowserPinchScript.wheelDeltaY(0.05), 1e-9)
+    }
+
+    @Test
+    fun `the delta is spliced into the script as a plain decimal`() {
+        // Pinned against a literal, not against wheelDeltaY itself, so a formatting change (an
+        // exponent, a locale comma) shows up here instead of as a page that silently misreads it.
+        assertTrue("deltaY: -4.8790164169432" in BrowserPinchScript.dispatch(0.05, 0.5, 0.5))
+    }
+
+    @Test
+    fun `non-finite input yields no movement aimed at the middle, never NaN in the script`() {
+        // coerceIn and coerceAtLeast pass NaN through, and NaN is valid JS, so nothing would fail
+        // loudly: the page would get an event with a NaN delta.
+        assertEquals(0.0, BrowserPinchScript.wheelDeltaY(Double.NaN))
+        assertEquals(0.0, BrowserPinchScript.wheelDeltaY(Double.POSITIVE_INFINITY))
+        val script = BrowserPinchScript.dispatch(Double.NaN, Double.NaN, Double.NEGATIVE_INFINITY)
+        assertFalse("NaN" in script)
+        assertFalse("Infinity" in script)
+        assertTrue("win.innerWidth * 0.5" in script)
+        assertTrue("win.innerHeight * 0.5" in script)
+    }
+
+    @Test
+    fun `the aim is kept inside the last point elementFromPoint can hit`() {
+        // innerWidth * 1.0 is one past the last addressable pixel and counts a classic scrollbar,
+        // where elementFromPoint returns null and the aim is lost exactly at the clamped edge.
+        val script = BrowserPinchScript.dispatch(0.05, 1.0, 1.0)
+        assertTrue("root0.clientWidth - 1" in script)
+        assertTrue("root0.clientHeight - 1" in script)
     }
 
     @Test
@@ -99,6 +132,12 @@ class BrowserPinchTest {
     }
 
     @Test
+    fun `a pointer outside the rect gives a fraction outside 0 to 1, left for the caller to clamp`() {
+        val fraction = pointerFractionInBounds(Rect(0f, 0f, 100f, 100f), Offset(150f, -50f), 1f)
+        assertEquals(Offset(1.5f, -0.5f), fraction)
+    }
+
+    @Test
     fun `an empty rect has no fraction`() {
         assertNull(pointerFractionInBounds(Rect(10f, 10f, 10f, 400f), Offset(10f, 20f), 1f))
     }
@@ -126,5 +165,42 @@ class BrowserPinchTest {
         accumulator.add(0.14)
         accumulator.reset()
         assertNull(accumulator.add(0.02))
+    }
+
+    // --- PinchOffers: a busy page cannot stall or replay a pinch ---
+
+    @Test
+    fun `the page's answer is passed on`() {
+        val offers = PinchOffers(maxPending = 8, deadlineMs = 5_000)
+        val answers = mutableListOf<Boolean>()
+        offers.offer(send = { answer -> answer(true) }, onAnswer = { answers += it })
+        offers.offer(send = { answer -> answer(false) }, onAnswer = { answers += it })
+        assertEquals(listOf(true, false), answers)
+    }
+
+    @Test
+    fun `a page that never answers counts as declined at the deadline, and a late answer is dropped`() {
+        val offers = PinchOffers(maxPending = 8, deadlineMs = 20)
+        var late: ((Boolean) -> Unit)? = null
+        val calls = AtomicInteger(0)
+        val declined = CountDownLatch(1)
+        offers.offer(send = { answer -> late = answer }, onAnswer = { claimed ->
+            calls.incrementAndGet()
+            if (!claimed) declined.countDown()
+        })
+        assertTrue(declined.await(2, TimeUnit.SECONDS))
+        late?.invoke(true)
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun `once the cap is waiting, a new delta skips the page and is declined at once`() {
+        val offers = PinchOffers(maxPending = 2, deadlineMs = 5_000)
+        val sent = AtomicInteger(0)
+        repeat(2) { offers.offer(send = { sent.incrementAndGet() }, onAnswer = {}) }
+        val answers = mutableListOf<Boolean>()
+        offers.offer(send = { sent.incrementAndGet() }, onAnswer = { answers += it })
+        assertEquals(2, sent.get())
+        assertEquals(listOf(false), answers)
     }
 }
