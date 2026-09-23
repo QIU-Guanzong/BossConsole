@@ -95,10 +95,14 @@ internal object BrowserPinchScript {
                   try { childWin = target.contentWindow; childDoc = childWin && childWin.document; } catch (e) { break; }
                   if (!childDoc) break;
                   var box = target.getBoundingClientRect();
-                  x -= box.left + target.clientLeft;
-                  y -= box.top + target.clientTop;
-                  inner = childDoc.elementFromPoint(x, y);
+                  // Child coordinates are committed only with the child target, so a miss inside
+                  // the iframe dispatches at the iframe element in the parent's coordinates.
+                  var cx = x - (box.left + target.clientLeft);
+                  var cy = y - (box.top + target.clientTop);
+                  inner = childDoc.elementFromPoint(cx, cy);
                   if (!inner) break;
+                  x = cx;
+                  y = cy;
                   win = childWin;
                   target = inner;
                 }
@@ -193,7 +197,11 @@ internal class PinchOffers(
             .completeOnTimeout(null, deadlineMs, TimeUnit.MILLISECONDS)
             .whenComplete { claimed, _ ->
                 pending.decrementAndGet()
-                onAnswer(claimed)
+                // The future whenComplete returns is discarded, so an exception from onAnswer
+                // would vanish without a trace. Surface it on the thread's handler instead.
+                runCatching { onAnswer(claimed) }.onFailure { e ->
+                    Thread.currentThread().let { it.uncaughtExceptionHandler?.uncaughtException(it, e) }
+                }
             }
         send({ claimed -> answer.complete(claimed) }, { answer.isDone })
     }

@@ -579,6 +579,10 @@ internal class BrowserHandleImpl(
     // as "claimed" and nothing else, which tells it apart from a gate that never opens.
     @Volatile private var lastPinchClaimed: Boolean? = null
 
+    // Unanswered offers in a row since the page last answered. Bounds how long a claim is
+    // carried by no answer: a slow frame keeps it, a hung renderer does not.
+    private val unansweredPinchOffers = AtomicInteger(0)
+
     /**
      * One macOS pinch delta, arriving on the EDT from the window-wide gesture listener.
      *
@@ -678,7 +682,16 @@ internal class BrowserHandleImpl(
         // busy zooming its canvas keeps its claim through a slow frame instead of having page
         // zoom stacked on top. With no answer yet on this page, it falls back to page zoom,
         // which is how every pinch behaved before #1565.
-        val claimed = answer ?: (lastPinchClaimed == true)
+        // Past MAX_UNANSWERED_PINCH_CLAIMS the page is taken to be hung rather than busy, and
+        // deltas go back to page zoom; otherwise a renderer that hung after claiming would leave
+        // pinch doing nothing at all until the tab navigated.
+        val claimed =
+            if (answer != null) {
+                unansweredPinchOffers.set(0)
+                answer
+            } else {
+                lastPinchClaimed == true && unansweredPinchOffers.incrementAndGet() <= MAX_UNANSWERED_PINCH_CLAIMS
+            }
         if (answer != null && lastPinchClaimed != answer) {
             lastPinchClaimed = answer
             logger.debug(
@@ -1385,6 +1398,7 @@ internal class BrowserHandleImpl(
                 // A pinch claim belongs to the page that made it. Carried over, a timed-out offer
                 // on the next page would read as claimed and page zoom would silently do nothing.
                 lastPinchClaimed = null
+                unansweredPinchOffers.set(0)
                 _isLoading = true
                 loadingListeners.forEach { listener ->
                     try {
@@ -1642,6 +1656,8 @@ internal class BrowserHandleImpl(
         // injection path: between the two, every way the renderer can change is accounted for.
         subscriptions +=
             browser.on(RenderProcessTerminated::class.java) { event ->
+                // A dead renderer cannot be claiming anything.
+                lastPinchClaimed = null
                 logger.debug(
                     LogCategory.BROWSER,
                     "Renderer terminated",
@@ -4487,6 +4503,13 @@ internal class BrowserHandleImpl(
 
         /** Unanswered pinch offers allowed at once; about a tenth of a second of trackpad events. */
         private const val MAX_PENDING_PINCH_OFFERS = 8
+
+        /**
+         * Unanswered offers in a row that still count as the page's last claim. Two full sets of
+         * pending offers, about 300 ms at the offer deadline: past one slow canvas frame, well
+         * short of a pinch that visibly does nothing.
+         */
+        private const val MAX_UNANSWERED_PINCH_CLAIMS = 2 * MAX_PENDING_PINCH_OFFERS
 
         /** At most one "Pinch zoom suppressed" line, across all handles, per this interval. */
         private const val PINCH_SUPPRESSED_LOG_INTERVAL_NS = 1_000_000_000L

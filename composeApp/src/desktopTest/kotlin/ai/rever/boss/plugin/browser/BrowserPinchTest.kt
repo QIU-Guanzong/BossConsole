@@ -109,7 +109,7 @@ class BrowserPinchTest {
         // an embedded canvas app would lose the pinch to page zoom, which is #1565 again.
         val script = BrowserPinchScript.dispatch(0.05, 0.5, 0.5)
         assertTrue("root.elementFromPoint(x, y)" in script)
-        assertTrue("childDoc.elementFromPoint(x, y)" in script)
+        assertTrue("childDoc.elementFromPoint(cx, cy)" in script)
         // Built from the child window's own constructor, so it belongs to the document it is
         // dispatched in.
         assertTrue("new win.WheelEvent('wheel'" in script)
@@ -220,7 +220,8 @@ class BrowserPinchTest {
     fun `an offer answered by its deadline reads as stale to a queued send`() {
         // A send that backed up behind a stalled renderer checks this and drops the offer
         // instead of replaying an old wheel event into the page after the gesture ended.
-        val offers = PinchOffers(maxPending = 8, deadlineMs = 20)
+        // Half a second, so the not-yet-stale read cannot lose a race on a loaded CI machine.
+        val offers = PinchOffers(maxPending = 8, deadlineMs = 500)
         var stale: (() -> Boolean)? = null
         val answered = CountDownLatch(1)
         offers.offer(send = { _, isStale -> stale = isStale }, onAnswer = { answered.countDown() })
