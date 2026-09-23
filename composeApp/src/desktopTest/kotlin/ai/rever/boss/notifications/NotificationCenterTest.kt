@@ -146,8 +146,18 @@ class NotificationCenterTest {
         NotificationCenter.resetForTesting(tempFile)
 
         assertEquals(NotificationCenter.MAX_ENTRIES, NotificationCenter.notifications.value.size)
-        assertEquals("n0", NotificationCenter.notifications.value.first().id)
-        assertEquals("n${NotificationCenter.MAX_ENTRIES - 1}", NotificationCenter.notifications.value.last().id)
+        assertEquals(
+            "n0",
+            NotificationCenter.notifications.value
+                .first()
+                .id,
+        )
+        assertEquals(
+            "n${NotificationCenter.MAX_ENTRIES - 1}",
+            NotificationCenter.notifications.value
+                .last()
+                .id,
+        )
     }
 
     @Test
@@ -155,6 +165,12 @@ class NotificationCenterTest {
         runBlocking {
             NotificationCenter.clock = { 1_000L }
             repeat(10) { NotificationCenter.post("N$it") }
-            assertEquals(10, NotificationCenter.notifications.value.map { it.id }.toSet().size)
+            assertEquals(
+                10,
+                NotificationCenter.notifications.value
+                    .map { it.id }
+                    .toSet()
+                    .size,
+            )
         }
 }
