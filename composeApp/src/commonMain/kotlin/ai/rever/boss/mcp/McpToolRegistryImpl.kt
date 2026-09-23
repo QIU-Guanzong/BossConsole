@@ -127,6 +127,7 @@ object McpToolRegistryImpl : McpToolRegistry {
         registerProvider(WorkspaceMcpToolProvider)
         registerProvider(SnippetMcpToolProvider)
         registerProvider(NotificationMcpToolProvider)
+        registerProvider(IntrospectionMcpToolProvider)
     }
 
     override val allTools: StateFlow<List<RegisteredMcpTool>> get() = core.allTools
@@ -975,6 +976,8 @@ internal class McpToolRegistryCore(
                             McpArgumentSanitizer.parseArguments(args.raw),
                             riskAssessment = DefaultMcpRiskEvaluator().evaluateRisk(tool.definition.name, args),
                             declaredReadOnly = tool.definition.readOnly,
+                            toolDescription = tool.definition.description,
+                            policy = policy,
                         )
                 ) {
                     is McpApprovalDecision.Approved -> {

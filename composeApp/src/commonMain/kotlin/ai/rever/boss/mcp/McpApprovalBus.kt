@@ -64,9 +64,23 @@ data class McpApprovalRequest(
      * when the request was raised, which leaves the name-only catalog to label it.
      */
     val declaredReadOnly: Boolean? = null,
+    /**
+     * The tool's declared description, captured at invocation so the operator approves with
+     * sight of what the tool claims to do rather than a bare name. Null only when the request
+     * was raised without the definition in hand.
+     */
+    val toolDescription: String? = null,
+    /** The policy action that suspended this call - ASK today; carried so the dialog can say why. */
+    val policy: McpPolicyAction? = null,
     val requestedAt: Long = System.currentTimeMillis(),
     val deferred: CompletableDeferred<McpApprovalDecision> = CompletableDeferred(),
-)
+) {
+    /**
+     * Milliseconds left before this request auto-denies, relative to [requestedAt].
+     * The dialog renders the snapshot it took at open; nothing here ticks.
+     */
+    fun remainingTimeoutMs(): Long = (timeoutMs - (System.currentTimeMillis() - requestedAt)).coerceAtLeast(0)
+}
 
 /**
  * Central event bus for routing interactive tool approval requests to the UI.
@@ -104,6 +118,8 @@ open class McpApprovalBus(
         timeoutMs: Long = defaultTimeoutMs,
         riskAssessment: McpRiskAssessment? = null,
         declaredReadOnly: Boolean? = null,
+        toolDescription: String? = null,
+        policy: McpPolicyAction? = null,
     ): McpApprovalDecision {
         val request =
             McpApprovalRequest(
@@ -113,6 +129,8 @@ open class McpApprovalBus(
                 timeoutMs = timeoutMs,
                 riskAssessment = riskAssessment,
                 declaredReadOnly = declaredReadOnly,
+                toolDescription = toolDescription,
+                policy = policy,
             )
 
         synchronized(lock) {

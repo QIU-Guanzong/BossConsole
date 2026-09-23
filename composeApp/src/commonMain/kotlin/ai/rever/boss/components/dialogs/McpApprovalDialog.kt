@@ -192,6 +192,17 @@ fun McpApprovalDialog(
                         )
                     }
 
+                    // The tool's own description is the operator's only sight of what it
+                    // claims to do - without it an approval is a guess on a bare name.
+                    request.toolDescription?.takeIf { it.isNotBlank() }?.let { description ->
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = description,
+                            fontSize = 12.sp,
+                            color = colors.textPrimary,
+                        )
+                    }
+
                     val sanitizedArguments =
                         remember(request.arguments) {
                             McpArgumentSanitizer.sanitize(request.arguments)
@@ -225,6 +236,19 @@ fun McpApprovalDialog(
                             }
                         }
                     }
+
+                    // Why the prompt exists and when it expires: the policy that suspended the
+                    // call plus the auto-deny countdown, snapshotted once at open.
+                    val remainingSeconds =
+                        remember(request.id) {
+                            ((request.remainingTimeoutMs() + 999L) / 1000L).coerceAtLeast(1L)
+                        }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Policy: ${request.policy?.name ?: "ASK"} · auto-denies in ~${remainingSeconds}s",
+                        fontSize = 10.sp,
+                        color = colors.textSecondary,
+                    )
                 }
 
                 request.riskAssessment?.let { assessment ->

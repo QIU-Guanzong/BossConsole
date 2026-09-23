@@ -64,6 +64,34 @@ class McpApprovalGateTest {
         }
 
     @Test
+    fun `an approval request carries the tool description, policy, and remaining timeout to the dialog`() =
+        runBlocking {
+            val bus = McpApprovalBus(defaultTimeoutMs = 5_000L)
+
+            val deferredDecision =
+                async {
+                    bus.requestApproval(
+                        toolName = "k8s_delete",
+                        providerId = "kubernetes",
+                        arguments = emptyMap(),
+                        toolDescription = "Delete a Kubernetes pod by name",
+                        policy = McpPolicyAction.ASK,
+                    )
+                }
+
+            val request = bus.pendingList.first { it.isNotEmpty() }.first()
+            assertEquals("Delete a Kubernetes pod by name", request.toolDescription)
+            assertEquals(McpPolicyAction.ASK, request.policy)
+            assertTrue(
+                request.remainingTimeoutMs() in 1..5_000L,
+                "remaining timeout must reflect elapsed time, got ${request.remainingTimeoutMs()}",
+            )
+
+            bus.approve(request.id)
+            deferredDecision.await()
+        }
+
+    @Test
     fun `requestApproval times out and fails closed if operator does not respond`() =
         runBlocking {
             // Fast timeout of 50ms for testing
