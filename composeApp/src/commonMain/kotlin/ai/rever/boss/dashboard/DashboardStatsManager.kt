@@ -53,6 +53,9 @@ data class DashboardStats(
  * Thread-safe: All file I/O operations run on Dispatchers.IO.
  * Uses StateFlow for reactive UI updates.
  */
+// Cohesive stats lifecycle: loading, tracking, debounced saves and the shutdown flush all own
+// the same persistence file; splitting it would scatter one responsibility.
+@Suppress("TooManyFunctions")
 object DashboardStatsManager {
     private const val SAVE_DEBOUNCE_MS = 5000L // Debounce saves to max once per 5 seconds
     private val settingsFile = BossDirectories.resolve("dashboard-stats.json")
