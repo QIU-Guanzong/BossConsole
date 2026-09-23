@@ -36,17 +36,17 @@ private fun count(
 ): String = "$n ${if (n == 1) one else many}"
 
 /**
- * The menu behind the "MCP access" item. Entries that would open an empty list or clear nothing
- * are left out rather than disabled, so the menu only ever offers something that does something;
- * "Tool policies" is always present because it is also where a rule is set proactively.
+ * The menu behind the "MCP access" item, one entry per kind of grant. Entries that would open an
+ * empty list are left out rather than disabled, so the menu only ever offers something that does
+ * something; "Tool policies" is always present because it is also where a rule is set proactively.
  *
  * No icons, so on macOS it renders as a real NSMenu (see `ContextMenu`'s `isNativeRepresentable`).
  */
 internal fun mcpAccessMenuItems(
     summary: McpAccessSummary,
     onPolicies: () -> Unit,
+    onSessionTrust: () -> Unit,
     onTrustedPlugins: () -> Unit,
-    onRevokeSession: () -> Unit,
 ): List<ContextMenuItem> =
     buildList {
         add(
@@ -55,12 +55,11 @@ internal fun mcpAccessMenuItems(
                 onClick = onPolicies,
             ),
         )
+        if (summary.sessionGrants > 0) {
+            add(ContextMenuItem(text = "Session trust (${summary.sessionGrants})...", onClick = onSessionTrust))
+        }
         if (summary.trustedPlugins > 0) {
             add(ContextMenuItem(text = "Trusted plugins (${summary.trustedPlugins})...", onClick = onTrustedPlugins))
-        }
-        if (summary.sessionGrants > 0) {
-            add(ContextMenuItem(isDivider = true))
-            add(ContextMenuItem(text = "Revoke session trust (${summary.sessionGrants})", onClick = onRevokeSession))
         }
     }
 

@@ -19,7 +19,7 @@ class McpAccessSummaryTest {
     @Test
     fun `every control the bar used to show is reachable from the menu`() {
         assertEquals(
-            listOf("Tool policies (3)...", "Trusted plugins (2)...", "---", "Revoke session trust (1)"),
+            listOf("Tool policies (3)...", "Session trust (1)...", "Trusted plugins (2)..."),
             labels(McpAccessSummary(savedRules = 3, trustedPlugins = 2, sessionGrants = 1)),
         )
     }
@@ -35,10 +35,10 @@ class McpAccessSummaryTest {
         mcpAccessMenuItems(
             McpAccessSummary(1, 1, 1),
             onPolicies = { fired += "policies" },
+            onSessionTrust = { fired += "session" },
             onTrustedPlugins = { fired += "plugins" },
-            onRevokeSession = { fired += "revoke" },
-        ).filterNot { it.isDivider }.forEach { it.onClick() }
-        assertEquals(listOf("policies", "plugins", "revoke"), fired)
+        ).forEach { it.onClick() }
+        assertEquals(listOf("policies", "session", "plugins"), fired)
     }
 
     @Test

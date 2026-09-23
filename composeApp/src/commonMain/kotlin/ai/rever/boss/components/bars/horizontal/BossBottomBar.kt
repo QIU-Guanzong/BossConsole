@@ -8,6 +8,7 @@ import ai.rever.boss.components.buttons.BossActionButton
 import ai.rever.boss.components.dialogs.McpActivityLogDialog
 import ai.rever.boss.components.dialogs.McpPolicyManagerDialog
 import ai.rever.boss.components.dialogs.McpProviderTrustDialog
+import ai.rever.boss.components.dialogs.McpSessionTrustDialog
 import ai.rever.boss.components.dialogs.McpToolIdentity
 import ai.rever.boss.components.events.PanelEventBus
 import ai.rever.boss.components.overlays.ContextMenu
@@ -337,7 +338,8 @@ fun BossRightBottomBar() {
  *   `~/.boss/mcp-tool-policy.json` and restarting).
  * - **Trusted plugins** - the provider-wide ALLOWs ("Trust plugin"), listed and revoked
  *   individually, since these are durable grants an operator made deliberately.
- * - **Revoke session trust** - the one-click clear-all for this session's grants.
+ * - **Session trust** - the tools allowed for this session only, listed and revoked
+ *   individually or all at once.
  *
  * Session trust is the grant that is live right now and bypasses prompts, so while any exists the
  * item carries its count in the alert colour: collapsing three controls into one must not hide
@@ -351,6 +353,7 @@ private fun McpAccessStatusItem(persistedPolicyConfig: McpToolPolicyConfig) {
     var showMenu by remember { mutableStateOf(false) }
     var showPolicyManager by remember { mutableStateOf(false) }
     var showTrustedPlugins by remember { mutableStateOf(false) }
+    var showSessionTrust by remember { mutableStateOf(false) }
     val summary =
         McpAccessSummary(
             savedRules = persistedPolicyConfig.rules.size,
@@ -373,8 +376,8 @@ private fun McpAccessStatusItem(persistedPolicyConfig: McpToolPolicyConfig) {
                         mcpAccessMenuItems(
                             summary = summary,
                             onPolicies = { showPolicyManager = true },
+                            onSessionTrust = { showSessionTrust = true },
                             onTrustedPlugins = { showTrustedPlugins = true },
-                            onRevokeSession = { McpToolRegistryImpl.policyEngine.clearSessionTrusts() },
                         ),
                     // Opens upward from the item: the bar sits at the bottom edge of the window.
                     alignment = Alignment.BottomStart,
@@ -383,6 +386,16 @@ private fun McpAccessStatusItem(persistedPolicyConfig: McpToolPolicyConfig) {
                 )
             }
         }
+    }
+    if (showSessionTrust) {
+        McpSessionTrustDialog(
+            trusted = sessionTrusted,
+            // The exact (provider, tool) pair: a same-named tool from another provider keeps its
+            // own grant. In-memory only, so there is no disk write to move off the UI thread.
+            onRevoke = { McpToolRegistryImpl.policyEngine.revokeSessionTrust(it.toolName, it.providerId) },
+            onRevokeAll = { McpToolRegistryImpl.policyEngine.clearSessionTrusts() },
+            onDismiss = { showSessionTrust = false },
+        )
     }
     if (showTrustedPlugins) {
         McpProviderTrustDialog(

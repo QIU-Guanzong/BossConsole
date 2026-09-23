@@ -2094,7 +2094,7 @@ defence against a hostile one that lies. Unknown tool names default to ALLOW whi
 the provider declares (or defaults to) `readOnly = true`. Known mutations default to ASK with
 a 45-second timeout. Each queued prompt is delivered to exactly one window and
 window teardown denies its owned request. Session trust is process-wide and can
-be cleared using “Revoke session trust” in the bottom bar's MCP access menu; restore the bar if
+be reviewed and revoked per tool (or all at once) from “Session trust” in the bottom bar's MCP access menu; restore the bar if
 it is hidden. Session trust is keyed to the exact provider the operator approved (#815): a same-named
 tool from a different provider gets its own ASK instead of inheriting the grant - the tool-name squat.
 McpSessionTrust keeps the (providerId, toolName) identity the engine uses everywhere else: a name-only
