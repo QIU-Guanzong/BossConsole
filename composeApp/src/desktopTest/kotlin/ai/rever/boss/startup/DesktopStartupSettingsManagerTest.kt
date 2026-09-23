@@ -107,18 +107,22 @@ class DesktopStartupSettingsManagerTest {
     }
 
     @Test
-    fun `concurrent updates leave disk at the final in-memory value`() = runBlocking {
-        coroutineScope {
-            launch { StartupSettingsManager.updateSettings(StartupSettings(workspaceLoadTimeoutMs = 1010L)) }
-            launch { StartupSettingsManager.updateSettings(StartupSettings(workspaceLoadTimeoutMs = 2020L)) }
-        }
+    fun `concurrent updates leave disk at the final in-memory value`() =
+        runBlocking {
+            coroutineScope {
+                launch { StartupSettingsManager.updateSettings(StartupSettings(workspaceLoadTimeoutMs = 1010L)) }
+                launch { StartupSettingsManager.updateSettings(StartupSettings(workspaceLoadTimeoutMs = 2020L)) }
+            }
 
-        val persisted = settingsFile.readText()
-        assertTrue(
-            persisted.contains(StartupSettingsManager.currentSettings.value.workspaceLoadTimeoutMs.toString()),
-            "the serialized write order must match the final in-memory update",
-        )
-    }
+            val persisted = settingsFile.readText()
+            assertTrue(
+                persisted.contains(
+                    StartupSettingsManager.currentSettings.value.workspaceLoadTimeoutMs
+                        .toString(),
+                ),
+                "the serialized write order must match the final in-memory update",
+            )
+        }
 
     /**
      * Interrupting the old writeText in place could leave a truncated file that the next
