@@ -107,16 +107,22 @@ function downloadStubClient(): SupabaseClient {
     published_at: "2026-01-01T00:00:00Z",
   }
 
-  // getLatestVersion chains .select().eq().order().limit().single(); every
-  // step returns the same chain and single() resolves the version row.
+  // getLatestVersion chains .select().eq().neq().gt().order().limit().single()
+  // (the neq/gt pair is the #912 finalization gate); every step returns the
+  // same chain and single() resolves the version row. The stub row is a
+  // finalized version, so the passthrough chain satisfies the gate.
   interface VersionQueryChain {
     eq: () => VersionQueryChain
+    neq: () => VersionQueryChain
+    gt: () => VersionQueryChain
     order: () => VersionQueryChain
     limit: () => VersionQueryChain
     single: () => Promise<{ data: typeof versionRow; error: null }>
   }
   const chain: VersionQueryChain = {
     eq: () => chain,
+    neq: () => chain,
+    gt: () => chain,
     order: () => chain,
     limit: () => chain,
     single: () => Promise.resolve({ data: versionRow, error: null }),
