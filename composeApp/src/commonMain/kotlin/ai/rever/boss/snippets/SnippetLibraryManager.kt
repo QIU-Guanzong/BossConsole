@@ -203,6 +203,7 @@ object SnippetLibraryManager {
                 @Suppress("TooGenericExceptionCaught") e: Exception,
             ) {
                 logger.warn(LogCategory.SYSTEM, "Failed to save snippets", error = e)
+                throw e
             }
         }
 }
