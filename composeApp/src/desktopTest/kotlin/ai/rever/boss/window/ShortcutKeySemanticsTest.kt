@@ -6,6 +6,7 @@ import ai.rever.boss.keymap.model.KeyBinding
 import ai.rever.boss.keymap.model.KeyStroke
 import ai.rever.boss.keymap.model.KeymapActions
 import ai.rever.boss.keymap.model.KeymapSettings
+import ai.rever.boss.keymap.model.TabSwitchMode
 import ai.rever.boss.plugin.api.KeyChordSpec
 import ai.rever.boss.plugin.api.PluginShortcutSpec
 import ai.rever.boss.plugin.api.ShortcutActionProvider
@@ -48,6 +49,7 @@ import kotlin.test.assertTrue
  * | modifier released first   | primary release              | no             | yes      |
  * | primary released first    | modifier release             | no (MRU commit)| no       |
  * | chord held, focus lost    | primary release              | no             | no       |
+ * | print armed (see below)   | first primary/modifier release | once         | primary  |
  *
  * Browser print is the one chord that still fires on release; see
  * `AWTKeyboardInterceptor.RELEASE_FIRED_ACTIONS`.
@@ -204,7 +206,7 @@ class ShortcutKeySemanticsTest {
     @Test
     fun `MRU steps on each Tab press and commits on the modifier release, keeping the last step`() {
         useBindings(KeyBinding(actionId = KeymapActions.TAB_NEXT, key = "Tab", modifiers = listOf("Cmd")))
-        settingsState.value = settingsState.value.copy(tabSwitchMode = ai.rever.boss.keymap.model.TabSwitchMode.MRU)
+        settingsState.value = settingsState.value.copy(tabSwitchMode = TabSwitchMode.MRU)
         val events = mutableListOf<MenuActionsHandler.TabSwitchAction>()
         val job = collectTabSwitches(events)
         try {
@@ -264,13 +266,18 @@ class ShortcutKeySemanticsTest {
         PluginShortcutRegistryImpl.register(provider)
         try {
             for ((round, rebound) in listOf(false, true).withIndex()) {
-                val rebind = KeyBinding(actionId = action, key = "K", modifiers = listOf("Cmd"))
+                // The rebind uses J, not the default K, so this round can only pass via the keymap.
+                val rebind = KeyBinding(actionId = action, key = "J", modifiers = listOf("Cmd"))
                 settingsState.value = KeymapSettings.fromBindings(listOfNotNull(rebind.takeIf { rebound }))
-                repeat(3) { assertTrue(dispatchKeyEvent(key(KeyEvent.KEY_PRESSED, KeyEvent.VK_K))) }
+                val keyCode = if (rebound) KeyEvent.VK_J else KeyEvent.VK_K
+                repeat(3) { assertTrue(dispatchKeyEvent(key(KeyEvent.KEY_PRESSED, keyCode))) }
                 assertEquals(round + 1, calls, "fires on the first press only")
-                assertTrue(dispatchKeyEvent(key(KeyEvent.KEY_RELEASED, KeyEvent.VK_K)))
+                assertTrue(dispatchKeyEvent(key(KeyEvent.KEY_RELEASED, keyCode)))
             }
+            assertFalse(dispatchKeyEvent(key(KeyEvent.KEY_PRESSED, KeyEvent.VK_K)), "a rebind retires the default")
+            assertFalse(dispatchKeyEvent(key(KeyEvent.KEY_RELEASED, KeyEvent.VK_K)))
             assertEquals(2, calls)
+            useBindings()
             PluginShortcutRegistryImpl.unregister(provider.providerId)
             assertFalse(dispatchKeyEvent(key(KeyEvent.KEY_PRESSED, KeyEvent.VK_K)))
             assertFalse(dispatchKeyEvent(key(KeyEvent.KEY_RELEASED, KeyEvent.VK_K)))
@@ -278,6 +285,49 @@ class ShortcutKeySemanticsTest {
         } finally {
             PluginShortcutRegistryImpl.unregister(provider.providerId)
         }
+    }
+
+    @Test
+    fun `a plugin handler that throws still consumes its chord`() {
+        val provider = shortcutProvider("plugin.shortcut-review.throws") { error("boom") }
+        PluginShortcutRegistryImpl.register(provider)
+        try {
+            useBindings()
+            val press = key(KeyEvent.KEY_PRESSED, KeyEvent.VK_K)
+            assertTrue(dispatchKeyEvent(press), "a thrown handler is logged, not leaked")
+            assertTrue(dispatchKeyEvent(key(KeyEvent.KEY_RELEASED, KeyEvent.VK_K)))
+        } finally {
+            PluginShortcutRegistryImpl.unregister(provider.providerId)
+        }
+    }
+
+    @Test
+    fun `an action that moves focus while it runs leaves no held state behind`() {
+        // What the focus listener does when the action opens or closes a window. Holding the
+        // chord before dispatching is what lets that clear stick instead of being re-inserted.
+        val provider =
+            shortcutProvider("plugin.shortcut-review.focus") { AWTKeyboardInterceptor.cancelPendingShortcut() }
+        PluginShortcutRegistryImpl.register(provider)
+        try {
+            useBindings()
+            assertTrue(dispatchKeyEvent(key(KeyEvent.KEY_PRESSED, KeyEvent.VK_K)))
+            assertTrue(AWTKeyboardInterceptor.pendingShortcuts.isEmpty())
+            assertTrue(AWTKeyboardInterceptor.claimedKeys.isEmpty())
+            assertFalse(dispatchKeyEvent(key(KeyEvent.KEY_RELEASED, KeyEvent.VK_K)))
+        } finally {
+            PluginShortcutRegistryImpl.unregister(provider.providerId)
+        }
+    }
+
+    @Test
+    fun `a chord left held in another window by a lost release fires once in the new one`() {
+        assertTrue(AWTKeyboardInterceptor.processKeyEvent(key(KeyEvent.KEY_PRESSED), "other-window"))
+        assertEquals(0, newTabEventCount.get(), "the first press ran in the other window")
+        // Its release never arrives. The same chord pressed in this window is a new press, not a repeat.
+        assertTrue(dispatchKeyEvent(key(KeyEvent.KEY_PRESSED)))
+        repeat(2) { assertTrue(dispatchKeyEvent(key(KeyEvent.KEY_PRESSED))) }
+        assertTrue(dispatchKeyEvent(key(KeyEvent.KEY_RELEASED)))
+        assertEquals(1, newTabEventCount.get())
     }
 
     private fun shortcutProvider(
@@ -323,7 +373,8 @@ class ShortcutKeySemanticsTest {
             assertEquals(1, events.size)
             MenuActionsHandler.updateActivePanelTabCount(windowId, 1)
             assertTrue(dispatchKeyEvent(key(KeyEvent.KEY_RELEASED)))
-            assertEquals(1, events.size)
+            assertFalse(dispatchKeyEvent(modifierRelease()))
+            assertEquals(1, events.size, "positional stepping never opens an MRU cycle, so no COMMIT")
         } finally {
             job.cancel()
             MenuActionsHandler.updateActivePanelTabCount(windowId, 0)

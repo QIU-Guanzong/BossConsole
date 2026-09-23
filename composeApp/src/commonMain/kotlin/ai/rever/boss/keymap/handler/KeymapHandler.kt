@@ -90,7 +90,7 @@ class KeymapHandler(
 
     /**
      * Handle a keyboard event in the given context.
-     * On KeyDown: Matches a shortcut chord and executes it (returns true if matched/consumed).
+     * On KeyDown: Matches a shortcut chord and executes it (returns true if the executor handled it).
      * On KeyUp: Consumes the release of a key whose KeyDown was consumed; executes nothing.
      * Returns true if the event was handled/consumed, false otherwise.
      *
@@ -135,19 +135,30 @@ class KeymapHandler(
 
             else -> {
                 val binding = matcher.match(event, context)
-                if (binding != null) {
-                    pendingShortcuts[event.key] = PendingKeymapShortcut(binding, event.key, context)
-                    claimedKeys.add(event.key)
-                    val handled = executor(binding.actionId)
-                    logger.debug(
-                        LogCategory.UI,
-                        "Ran shortcut",
-                        mapOf("actionId" to binding.actionId, "handled" to handled),
-                    )
-                }
-                binding != null
+                binding != null && runAndHold(binding, event.key, context, executor)
             }
         }
+
+    /**
+     * Hold [binding]'s chord and execute it. An action the executor does not handle leaves the
+     * key unclaimed and the event unconsumed, the same as the AWT dispatcher does.
+     */
+    private fun runAndHold(
+        binding: KeyBinding,
+        key: Key,
+        context: ShortcutContext,
+        executor: (String) -> Boolean,
+    ): Boolean {
+        pendingShortcuts[key] = PendingKeymapShortcut(binding, key, context)
+        claimedKeys.add(key)
+        val handled = executor(binding.actionId)
+        logger.debug(LogCategory.UI, "Ran shortcut", mapOf("actionId" to binding.actionId, "handled" to handled))
+        if (!handled) {
+            pendingShortcuts.remove(key)
+            claimedKeys.remove(key)
+        }
+        return handled
+    }
 
     private fun releaseShortcut(event: KeyEvent): Boolean {
         val claimed = claimedKeys.remove(event.key)

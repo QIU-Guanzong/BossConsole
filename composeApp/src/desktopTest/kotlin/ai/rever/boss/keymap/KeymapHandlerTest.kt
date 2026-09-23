@@ -547,6 +547,24 @@ class KeymapHandlerTest {
     }
 
     @Test
+    fun `a chord the executor does not handle is neither consumed nor held`() {
+        val binding = KeyBinding(actionId = "test.action", key = "N", modifiers = listOf("Cmd"))
+        val handler = KeymapHandler(KeymapSettings.fromBindings(listOf(binding)))
+        var calls = 0
+        val decline: (String) -> Boolean = {
+            calls++
+            false
+        }
+        val keyDown = createKeyEvent(Key.N, KeyEventType.KeyDown, meta = true)
+        assertFalse(handler.handleKeyEvent(keyDown, ShortcutContext.GLOBAL, decline), "matches the AWT path")
+        assertFalse(handler.hasPendingShortcut)
+        assertFalse(handler.handleKeyEvent(keyDown, ShortcutContext.GLOBAL, decline), "not a swallowed repeat")
+        assertEquals(2, calls)
+        val keyUp = createKeyEvent(Key.N, KeyEventType.KeyUp, meta = true)
+        assertFalse(handler.handleKeyEvent(keyUp, ShortcutContext.GLOBAL, decline))
+    }
+
+    @Test
     fun `overlapping Compose chords retain each action and suppress repeats`() {
         val bindings = listOf("N", "T").map { KeyBinding(actionId = it, key = it, modifiers = listOf("Cmd")) }
         val handler = KeymapHandler(KeymapSettings.fromBindings(bindings))

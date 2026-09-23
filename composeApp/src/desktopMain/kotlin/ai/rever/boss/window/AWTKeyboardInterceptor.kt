@@ -86,8 +86,7 @@ object AWTKeyboardInterceptor {
                 altDown == event.isAltDown
 
         /** Whether the action has not run yet and runs when the chord is let go of. */
-        val firesOnRelease: Boolean
-            get() = hostBinding?.binding?.actionId in RELEASE_FIRED_ACTIONS
+        val firesOnRelease: Boolean get() = hostBinding?.binding?.actionId in RELEASE_FIRED_ACTIONS
     }
 
     /**
@@ -299,10 +298,12 @@ object AWTKeyboardInterceptor {
         if (binding != null) {
             // Run it now, unless it is one of the few that wait for release: those only probe
             // (perform = false) with the SAME gate the later fire uses, so a press is claimed
-            // exactly when the action is available.
-            val held = PendingShortcut(event.keyCode, windowId, hostBinding = match)
+            // exactly when the action is available. Held BEFORE dispatching, so a focus change
+            // the action causes (a new or closed window) clears this chord like any other.
+            val held = holdChord(event, PendingShortcut(event.keyCode, windowId, hostBinding = match))
             val handled = dispatchAction(binding.actionId, windowId, perform = !held.firesOnRelease)
             if (!handled) {
+                unholdChord(held)
                 // A host binding matched but has no dispatch case here, because the chord is
                 // served further down or by nothing at all. QUICK_SWITCHER_OPEN (Ctrl+Space)
                 // and TEST_EXTERNAL_LINK (Cmd+Shift+G) are the two that reach this today, and
@@ -325,7 +326,6 @@ object AWTKeyboardInterceptor {
                 return false
             }
             if (!held.firesOnRelease) startTabCycleIfMru(match, windowId)
-            holdChord(event, held)
             return true
         }
 
@@ -338,9 +338,8 @@ object AWTKeyboardInterceptor {
         val pluginActionId = findMatchingPluginDefault(event) ?: return false
         // dispatch reports false only for an action no provider registers, which leaves the
         // chord to the focused component. A handler that throws is logged and still consumed.
-        if (!PluginShortcutRegistryImpl.dispatch(pluginActionId, windowId)) return false
-        holdChord(event, PendingShortcut(event.keyCode, windowId, pluginActionId = pluginActionId))
-        return true
+        val held = holdChord(event, PendingShortcut(event.keyCode, windowId, pluginActionId = pluginActionId))
+        return PluginShortcutRegistryImpl.dispatch(pluginActionId, windowId).also { if (!it) unholdChord(held) }
     }
 
     /**
@@ -356,26 +355,35 @@ object AWTKeyboardInterceptor {
     ): Boolean {
         val pending = pendingShortcuts[event.keyCode]
         if (pending != null && (pending.windowId != windowId || !pending.sameModifiersAs(event))) {
-            pendingShortcuts.remove(event.keyCode)
-            claimedKeys.remove(event.keyCode)
+            unholdChord(pending)
             return false
         }
         return event.keyCode in claimedKeys || pending != null
     }
 
-    /** Claim [event]'s key until its release and record the chord as held; see [PendingShortcut]. */
+    /**
+     * Claim [event]'s key until its release and record the chord as held; see [PendingShortcut].
+     * Returns the stored record, for [unholdChord].
+     */
     private fun holdChord(
         event: KeyEvent,
         chord: PendingShortcut,
-    ) {
-        claimedKeys.add(event.keyCode)
-        pendingShortcuts[event.keyCode] =
-            chord.copy(
+    ): PendingShortcut =
+        chord
+            .copy(
                 metaDown = event.isMetaDown,
                 controlDown = event.isControlDown,
                 shiftDown = event.isShiftDown,
                 altDown = event.isAltDown,
-            )
+            ).also {
+                claimedKeys.add(event.keyCode)
+                pendingShortcuts[event.keyCode] = it
+            }
+
+    /** Undo [holdChord] for a press that turned out not to be ours, leaving the key unclaimed. */
+    private fun unholdChord(held: PendingShortcut) {
+        pendingShortcuts.remove(held.keyCode, held)
+        claimedKeys.remove(held.keyCode)
     }
 
     /**
@@ -428,16 +436,16 @@ object AWTKeyboardInterceptor {
     }
 
     private fun fireOnRelease(chord: PendingShortcut) {
-        val match = chord.hostBinding
-        if (chord.firesOnRelease && match != null) {
-            dispatchAction(match.binding.actionId, chord.windowId, perform = true)
-        }
+        val match = chord.hostBinding ?: return
+        if (chord.firesOnRelease) dispatchAction(match.binding.actionId, chord.windowId, perform = true)
     }
 
     /**
-     * Clear all held-chord state, dropping a release-fired chord that has not run yet -
-     * BossConsole#490's cancellation requirement. Called on focus loss (the listener [install] registers) and
-     * on [uninstall]; safe to call when nothing is pending.
+     * Clear all held-chord state - BossConsole#490's cancellation requirement. Every action
+     * except a [RELEASE_FIRED_ACTIONS] one has already run, so what this cancels is an armed
+     * print, plus the claims: a release arriving after this is not consumed. Called on focus
+     * loss (the listener [install] registers) and on [uninstall]; safe to call when nothing is
+     * pending.
      */
     internal fun cancelPendingShortcut() {
         pendingShortcuts.clear()
