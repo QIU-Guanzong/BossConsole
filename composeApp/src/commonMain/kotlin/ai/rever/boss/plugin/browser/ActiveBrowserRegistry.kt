@@ -253,13 +253,15 @@ object ActiveBrowserRegistry {
      * window, a Swing dialog) rather than in it. Compose treats focus moving to another window as
      * a temporary loss and reports no focus change, so [MainPanelFocusTracker] still says the main
      * panel has focus; trusting it there would hand the dialog's Cmd+L, Cmd+R or Cmd+[ to the
-     * browser behind it. A page that had focus loses it when its window deactivates, so only the
-     * Compose half needs the guard.
+     * browser behind it. The page half is guarded too: a page should lose focus when its window
+     * deactivates, but that is JxBrowser's behaviour to keep, not ours, and with the keyboard in
+     * another window no browser in this one can be what it is typing into.
      */
     fun keyboardOwnerIn(
         windowId: String,
         inWindowItself: Boolean,
     ): BrowserKeyboardOwner {
+        if (!inWindowItself) return BrowserKeyboardOwner.NONE
         // Runs on the EDT for every modifier chord, so the usual case - no page focused anywhere -
         // allocates nothing. Liveness is isLive, the same test the active handle passes: a handle
         // whose transport died sends no FocusLost, and must not keep vetoing the window's browser.
@@ -274,7 +276,7 @@ object ActiveBrowserRegistry {
         return resolveBrowserKeyboardOwner(
             activeHandleId = _activeHandleIdByWindow.value[windowId],
             focusedPageHandleIds = focusedHere,
-            mainPanelHasComposeFocus = inWindowItself && MainPanelFocusTracker.hasFocus(windowId),
+            mainPanelHasComposeFocus = MainPanelFocusTracker.hasFocus(windowId),
         )
     }
 }

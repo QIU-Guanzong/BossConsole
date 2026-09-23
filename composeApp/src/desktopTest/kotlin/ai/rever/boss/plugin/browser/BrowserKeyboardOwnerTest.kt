@@ -108,7 +108,9 @@ class BrowserKeyboardOwnerTest {
         assertEquals(BrowserKeyboardOwner.CHROME, ActiveBrowserRegistry.keyboardOwnerIn(WINDOW, inWindowItself = true))
 
         ActiveBrowserRegistry.setPageFocused("kb-active", true)
-        assertEquals(BrowserKeyboardOwner.PAGE, ActiveBrowserRegistry.keyboardOwnerIn(WINDOW, inWindowItself = false))
+        assertEquals(BrowserKeyboardOwner.PAGE, ActiveBrowserRegistry.keyboardOwnerIn(WINDOW, inWindowItself = true))
+        // Keyboard in an owned dialog window: not even a focused page is the target.
+        assertEquals(BrowserKeyboardOwner.NONE, ActiveBrowserRegistry.keyboardOwnerIn(WINDOW, inWindowItself = false))
     }
 
     @Test
