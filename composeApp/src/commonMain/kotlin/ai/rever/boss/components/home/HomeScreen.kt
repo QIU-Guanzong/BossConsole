@@ -1,5 +1,6 @@
 package ai.rever.boss.components.home
 
+import ai.rever.boss.app.ProjectOpenRequests
 import ai.rever.boss.components.dashboard.cards.BrowserPageCard
 import ai.rever.boss.components.dashboard.cards.FileCard
 import ai.rever.boss.components.dashboard.cards.ProjectCard
@@ -20,6 +21,7 @@ import ai.rever.boss.plugin.scrollbar.verticalScrollWithScrollbar
 import ai.rever.boss.plugin.ui.BossTheme
 import ai.rever.boss.project.ProjectRemovalScope
 import ai.rever.boss.project.removeProjectAndReport
+import ai.rever.boss.window.LocalWindowId
 import ai.rever.boss.window.LocalWindowProjectState
 import ai.rever.boss.window.Project
 import ai.rever.boss.window.selectProjectInWindow
@@ -81,7 +83,10 @@ fun HomeScreen(modifier: Modifier = Modifier) {
     // instead, a second hand-maintained copy of the same layouts (now deleted).
     val workspaces by workspaceManager.workspaces.collectAsState()
 
-    var projectToOpen by remember { mutableStateOf<Project?>(null) }
+    val windowId = LocalWindowId.current
+    val openProject: (Project) -> Unit = { project ->
+        if (!ProjectOpenRequests.ask(windowId, project)) selectProjectInWindow(windowProjectState, project)
+    }
     var projectToRemove by remember { mutableStateOf<Project?>(null) }
     val scrollState = rememberScrollState()
     val scope = rememberCoroutineScope()
@@ -106,8 +111,10 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                 recentProjects = recentProjects,
                 windowHoldsProject = selectedProject.path.isNotEmpty(),
                 actions = actions,
-                onAskWhichWindow = { projectToOpen = it },
-                onOpenHere = { selectProjectInWindow(windowProjectState, it) },
+                // Both land on the window's one "where should this open?" dialog, whether or
+                // not a project is already open: a Space carries its own project either way.
+                onAskWhichWindow = openProject,
+                onOpenHere = openProject,
                 onAskToRemove = { projectToRemove = it },
             )
 
@@ -122,11 +129,8 @@ fun HomeScreen(modifier: Modifier = Modifier) {
     }
 
     HomeProjectDialogs(
-        projectToOpen = projectToOpen,
         projectToRemove = projectToRemove,
         openProjectPath = selectedProject.path,
-        onOpenHere = { selectProjectInWindow(windowProjectState, it) },
-        onOpenDone = { projectToOpen = null },
         onRemoveDone = { projectToRemove = null },
         onRemove = { project, removalScope -> scope.launch { removeProjectAndReport(project, removalScope) } },
     )

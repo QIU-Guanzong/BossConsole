@@ -247,6 +247,17 @@ internal class BossAppState(
      */
     var restoredProjectPath by mutableStateOf<String?>(null)
 
+    /**
+     * The project a person just placed with an explicit answer to "where should this open?" -
+     * This Space, New Space, or a new window arriving with it.
+     *
+     * The project-selection effect skips it once, like [restoredProjectPath], because the answer
+     * already said what happens to the layout: This Space keeps it, New Space raises the Space
+     * list itself, and a new window opens on its own fresh Space. Consulting the default-Space
+     * setting on top would apply a layout or prompt a second time.
+     */
+    var answeredProjectPath by mutableStateOf<String?>(null)
+
     // Track if handlers have been marked ready (prevents race condition between workspace load and timeout)
     // Uses atomic flag to ensure handler marking happens exactly once
     private val handlersMarked =

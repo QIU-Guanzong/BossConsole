@@ -65,6 +65,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
@@ -223,8 +224,19 @@ internal fun BossAppStartupEffects(state: BossAppState) {
     LaunchedEffect(windowId, windowProjectState) {
         val pendingProject = consumePendingInitialProject(windowId)
         if (pendingProject != null) {
+            // Opening a project in a NEW window is itself the answer to "where": the window's
+            // own fresh Space. So the project-selection effect must not ask for a layout on top.
+            state.answeredProjectPath = pendingProject.path
             windowProjectState.selectProject(pendingProject)
         }
+    }
+
+    // "Open this project" from anywhere outside BossAppDialogs - the top bar, Home, the Open
+    // Project list - lands on this window's one "where should it open?" dialog.
+    LaunchedEffect(windowId) {
+        ProjectOpenRequests.requests
+            .filter { it.windowId == windowId }
+            .collect { state.projectToOpen = it.project }
     }
 
     // Collect window-specific project state reactively (used by multiple effects below)
@@ -369,6 +381,13 @@ internal fun BossAppStartupEffects(state: BossAppState) {
         if (!isUserProjectSelection(path, state.restoredProjectPath)) {
             // Consumed, so re-opening the same project later still counts as a choice.
             state.restoredProjectPath = null
+            return@LaunchedEffect
+        }
+
+        // Placed through "where should this open?", which already decided the layout. Consumed
+        // for the reason the restored path is.
+        if (path == state.answeredProjectPath) {
+            state.answeredProjectPath = null
             return@LaunchedEffect
         }
 

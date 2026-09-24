@@ -85,6 +85,7 @@ import ai.rever.boss.utils.logging.LogCategory
 import ai.rever.boss.window.MenuActionsHandler
 import ai.rever.boss.window.Project
 import ai.rever.boss.window.WindowOperations
+import ai.rever.boss.window.WindowProjectState
 import ai.rever.boss.window.selectProjectInWindow
 import androidx.compose.material.Text
 import androidx.compose.material.TextButton
@@ -410,7 +411,10 @@ internal fun BossAppDialogs(state: BossAppState) {
             // The same list the top bar's workspace button and the app menu show, saved
             // workspaces included. Reading PredefinedWorkspaces here instead would offer a
             // different set than the rest of the app does.
-            workspaces = workspaces,
+            //
+            // Only the Spaces this project can open in: applying a saved Space also selects the
+            // project it was saved with, so one of another project's would swap this one out.
+            workspaces = spacesForProject(workspaces, windowProjectState.selectedProject.value.path),
             onDismiss = {
                 state.pendingWorkspacePrompt = null
                 state.focusRequester.requestFocus()
@@ -1088,13 +1092,8 @@ internal fun BossAppDialogs(state: BossAppState) {
         rememberDirectoryPicker { path ->
             path?.let {
                 val projectName = it.extractFileName().ifEmpty { "Unknown" }
-                selectProjectInWindow(
-                    windowProjectState,
-                    Project(
-                        name = projectName,
-                        path = it,
-                    ),
-                )
+                // Asked where it goes, like every other way of opening a project.
+                state.projectToOpen = Project(name = projectName, path = it)
                 // Show CodeBase panel when project is selected
                 state.draggablePanelComponent.setPanelVisible(
                     left.top,
@@ -1125,7 +1124,7 @@ internal fun BossAppDialogs(state: BossAppState) {
                 state.focusRequester.requestFocus()
             },
             onProjectCreated = { project ->
-                selectProjectInWindow(windowProjectState, project)
+                state.projectToOpen = project
                 state.showNewProjectDialog = false
                 state.focusRequester.requestFocus()
             },
@@ -1147,20 +1146,13 @@ internal fun BossAppDialogs(state: BossAppState) {
                         path = projectPath,
                     )
                 state.showCloneProjectDialog = false
-                // Check if a project is already open
-                if (selectedProject.path.isNotEmpty()) {
-                    // Show dialog to choose between current window or new window
-                    state.projectToOpen = project
-                } else {
-                    // No project open, directly open in current window
-                    selectProjectInWindow(windowProjectState, project)
-                    state.focusRequester.requestFocus()
-                }
+                state.projectToOpen = project
             },
         )
     }
 
-    // Project open mode dialog (for cloned projects and other project opening flows)
+    // "Where should this project open?" - the ONE place every host way of opening a project asks
+    // it. See ProjectOpenRequests, which carries the requests raised outside this composable.
     state.projectToOpen?.let { project ->
         ProjectOpenModeDialog(
             project = project,
@@ -1168,8 +1160,13 @@ internal fun BossAppDialogs(state: BossAppState) {
                 state.projectToOpen = null
                 state.focusRequester.requestFocus()
             },
-            onOpenInCurrentWindow = { selectedProj ->
-                selectProjectInWindow(windowProjectState, selectedProj)
+            onOpenInThisSpace = { selectedProj ->
+                openProjectHere(state, windowProjectState, selectedProj, askForSpace = false)
+                state.projectToOpen = null
+                state.focusRequester.requestFocus()
+            },
+            onOpenInNewSpace = { selectedProj ->
+                openProjectHere(state, windowProjectState, selectedProj, askForSpace = true)
                 state.projectToOpen = null
                 state.focusRequester.requestFocus()
             },
@@ -1353,4 +1350,25 @@ private fun HtmlFilePrompt(state: BossAppState) {
             )
         }
     }
+}
+
+/**
+ * Give this window [project], answering "where" with the Space on screen or a new one.
+ *
+ * [BossAppState.answeredProjectPath] is set BEFORE the selection so the project-selection effect,
+ * which observes it a frame later, knows the question was already answered. Not set when the
+ * project is already the selected one: the path does not change, the effect never runs, and a
+ * recorded path would then wrongly swallow a later selection of it.
+ */
+private fun openProjectHere(
+    state: BossAppState,
+    windowProjectState: WindowProjectState,
+    project: Project,
+    askForSpace: Boolean,
+) {
+    if (windowProjectState.selectedProject.value.path != project.path) {
+        state.answeredProjectPath = project.path
+        selectProjectInWindow(windowProjectState, project)
+    }
+    if (askForSpace) state.pendingWorkspacePrompt = project.name
 }
