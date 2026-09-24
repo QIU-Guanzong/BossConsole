@@ -9,12 +9,14 @@ import ai.rever.boss.components.overlays.ContextMenuItem
  * @property trustedPlugins persisted provider-wide ALLOWs ("Trust plugin").
  * @property sessionGrants tools trusted for this session only.
  * @property yolo whether YOLO mode is on (every ASK runs without prompting).
+ * @property yoloAvailable false when the deployment refuses YOLO mode, which hides the entry.
  */
 internal data class McpAccessSummary(
     val savedRules: Int,
     val trustedPlugins: Int,
     val sessionGrants: Int,
     val yolo: Boolean = false,
+    val yoloAvailable: Boolean = true,
 ) {
     /**
      * Shown while there is anything to manage, or any tool a rule could be set for. The same
@@ -25,6 +27,9 @@ internal data class McpAccessSummary(
         val anyGrant = savedRules > 0 || trustedPlugins > 0 || sessionGrants > 0
         return yolo || hasTools || anyGrant
     }
+
+    /** The session-trust badge read aloud, e.g. "2 tools trusted for this session". */
+    fun sessionGrantsDescription(): String = count(sessionGrants, "tool", "tools") + " trusted for this session"
 
     /** What the bar item reads: while YOLO is on the bar says so, in words, not only in colour. */
     val label: String get() = if (yolo) "MCP: YOLO" else "MCP access"
@@ -83,7 +88,7 @@ internal fun mcpAccessMenuItems(
         if (summary.trustedPlugins > 0) {
             add(ContextMenuItem(text = "Trusted plugins (${summary.trustedPlugins})...", onClick = onTrustedPlugins))
         }
-        if (!summary.yolo) {
+        if (!summary.yolo && summary.yoloAvailable) {
             add(ContextMenuItem(isDivider = true))
             add(ContextMenuItem(text = "YOLO mode...", onClick = onYolo))
         }

@@ -5,7 +5,6 @@ import ai.rever.boss.components.bars.getBarScrollbarConfig
 import ai.rever.boss.components.bars.horizontalScrollWithScrollbar
 import ai.rever.boss.components.bars.rememberBarContextMenuItems
 import ai.rever.boss.components.buttons.BossActionButton
-import ai.rever.boss.components.dialogs.ConfirmationDialog
 import ai.rever.boss.components.dialogs.McpActivityLogDialog
 import ai.rever.boss.components.dialogs.McpPolicyManagerDialog
 import ai.rever.boss.components.dialogs.McpProviderTrustDialog
@@ -24,6 +23,7 @@ import ai.rever.boss.layout.BossChrome
 import ai.rever.boss.mcp.McpPolicyAction
 import ai.rever.boss.mcp.McpToolPolicyConfig
 import ai.rever.boss.mcp.McpToolRegistryImpl
+import ai.rever.boss.mcp.McpYoloPrompt
 import ai.rever.boss.performance.PerformanceState
 import ai.rever.boss.plugin.api.PanelId
 import ai.rever.boss.plugin.api.RegisteredMcpTool
@@ -66,6 +66,8 @@ import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -356,14 +358,16 @@ private fun McpAccessStatusItem(persistedPolicyConfig: McpToolPolicyConfig) {
     var showPolicyManager by remember { mutableStateOf(false) }
     var showTrustedPlugins by remember { mutableStateOf(false) }
     var showSessionTrust by remember { mutableStateOf(false) }
-    var showYoloConfirm by remember { mutableStateOf(false) }
-    val yolo by McpToolRegistryImpl.policyEngine.yoloMode.collectAsState()
+    val yolo by McpToolRegistryImpl.yoloMode.collectAsState()
+    val windowId = LocalWindowId.current
+    val scope = rememberCoroutineScope()
     val summary =
         McpAccessSummary(
             savedRules = persistedPolicyConfig.rules.size,
             trustedPlugins = persistedPolicyConfig.providerRules.count { it.value == McpPolicyAction.ALLOW },
             sessionGrants = sessionTrusted.size,
             yolo = yolo,
+            yoloAvailable = McpToolRegistryImpl.yoloAvailable,
         )
     if (summary.isVisible(hasTools = allTools.isNotEmpty())) {
         var anchorHeight by remember { mutableStateOf(0) }
@@ -373,7 +377,9 @@ private fun McpAccessStatusItem(persistedPolicyConfig: McpToolPolicyConfig) {
                 color = if (yolo) BossTheme.colors.alert else BossTheme.colors.textSecondary,
                 leadingIcon = if (yolo) Icons.Outlined.GppMaybe else Icons.Outlined.Security,
                 badge = summary.sessionGrants.takeIf { it > 0 }?.toString(),
+                badgeDescription = summary.sessionGrantsDescription(),
                 tooltip = summary.tooltip(),
+                clickLabel = "Open MCP access menu",
                 onClick = { showMenu = true },
             )
             if (showMenu) {
@@ -386,9 +392,9 @@ private fun McpAccessStatusItem(persistedPolicyConfig: McpToolPolicyConfig) {
                             onTrustedPlugins = { showTrustedPlugins = true },
                             onYolo = {
                                 if (yolo) {
-                                    McpToolRegistryImpl.policyEngine.setYoloMode(false)
+                                    scope.launch { McpToolRegistryImpl.setYoloMode(false) }
                                 } else {
-                                    showYoloConfirm = true
+                                    windowId?.let(McpYoloPrompt::request)
                                 }
                             },
                         ),
@@ -399,20 +405,6 @@ private fun McpAccessStatusItem(persistedPolicyConfig: McpToolPolicyConfig) {
                 )
             }
         }
-    }
-    if (showYoloConfirm) {
-        ConfirmationDialog(
-            title = "Turn on YOLO mode?",
-            message = MCP_YOLO_CONFIRMATION_MESSAGE,
-            icon = Icons.Outlined.GppMaybe,
-            iconTint = BossTheme.colors.alert,
-            confirmText = "Turn on for this session",
-            onDismiss = { showYoloConfirm = false },
-            onConfirm = {
-                McpToolRegistryImpl.policyEngine.setYoloMode(true)
-                showYoloConfirm = false
-            },
-        )
     }
     if (showSessionTrust) {
         McpSessionTrustDialog(
@@ -544,7 +536,8 @@ private fun McpActivityStatusItem() {
     var showActivityLog by remember { mutableStateOf(false) }
     val tools by McpToolRegistryImpl.tools.collectAsState()
     if (recentOps.isEmpty() && tools.isEmpty() && !showActivityLog) return
-    val lastOp = recentOps.firstOrNull()
+    // The most recent CALL: a YOLO on/off marker is in the ledger for audit but is not a call.
+    val lastOp = recentOps.firstOrNull { !it.approvalDisposition.isGovernanceEvent }
     val statusText =
         if (lastOp != null) {
             "MCP: ${lastOp.toolName} (${formatMcpDuration(lastOp.durationMs)}) ${if (lastOp.isError) "✕" else "✓"}"
@@ -588,6 +581,11 @@ private fun StatusBarTextButton(
     color: Color = BossTheme.colors.textSecondary,
     leadingIcon: ImageVector? = null,
     badge: String? = null,
+    // What a screen reader announces the click DOES. Defaults to the tooltip, which is right when
+    // the tooltip names the action ("Open the MCP activity log") and wrong when it describes state.
+    clickLabel: String = tooltip,
+    // How the badge is read aloud; without it a screen reader announces a bare number.
+    badgeDescription: String? = null,
 ) {
     val colors = BossTheme.colors
     HoverTooltipBox(text = tooltip, placement = TooltipPlacement.TOP) {
@@ -597,7 +595,7 @@ private fun StatusBarTextButton(
                 Modifier
                     .clip(RoundedCornerShape(BossTheme.radius.input))
                     .pointerHoverIcon(PointerIcon.Hand)
-                    .clickable(onClickLabel = tooltip, role = Role.Button, onClick = onClick)
+                    .clickable(onClickLabel = clickLabel, role = Role.Button, onClick = onClick)
                     .padding(horizontal = 6.dp, vertical = 2.dp),
         ) {
             if (leadingIcon != null) {
@@ -627,18 +625,16 @@ private fun StatusBarTextButton(
                     modifier =
                         Modifier
                             .background(colors.alert.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                            .padding(horizontal = 5.dp),
+                            .padding(horizontal = 5.dp)
+                            .then(
+                                if (badgeDescription != null) {
+                                    Modifier.clearAndSetSemantics { contentDescription = badgeDescription }
+                                } else {
+                                    Modifier
+                                },
+                            ),
                 )
             }
         }
     }
 }
-
-internal const val MCP_YOLO_CONFIRMATION_MESSAGE =
-    "Every MCP tool call that would normally ask for approval will run without asking, from " +
-        "every agent and plugin, including tools added later and high-risk ones such as shell " +
-        "commands.\n\n" +
-        "Still enforced: tools and plugins you set to Always deny, the kill switch, and your " +
-        "role's permissions. Every call is still recorded in the MCP activity log as " +
-        "\"Yolo allowed\".\n\n" +
-        "Lasts until you turn it off or quit BOSS."

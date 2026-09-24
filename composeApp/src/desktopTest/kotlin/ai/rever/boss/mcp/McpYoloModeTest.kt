@@ -17,7 +17,9 @@ import kotlin.test.assertTrue
  * claim "explicit denies still win" is checked where invocation is decided, not just asserted.
  */
 class McpYoloModeTest {
-    private class Fixture {
+    private class Fixture(
+        yoloAvailable: Boolean = true,
+    ) {
         val approvalBus = McpApprovalBus(defaultTimeoutMs = 5000L)
         val policyEngine = McpPolicyEngine(policyFile = null)
         val ledger = McpOperationLedger(ledgerFile = null)
@@ -28,6 +30,7 @@ class McpYoloModeTest {
                 policyEngine = policyEngine,
                 approvalBus = approvalBus,
                 ledger = ledger,
+                yoloAvailable = yoloAvailable,
             ).also { core ->
                 core.registerProvider(
                     object : McpToolProvider {
@@ -60,7 +63,7 @@ class McpYoloModeTest {
     fun `yolo runs an ASK tool without prompting and records it as yolo`() =
         runBlocking {
             val f = Fixture()
-            f.policyEngine.setYoloMode(true)
+            f.core.setYoloMode(true)
             val result = f.core.invoke("run_command", """{"script":"rm -rf /tmp/x"}""")
             assertFalse(result.isError)
             assertEquals(1, f.calls)
@@ -83,7 +86,7 @@ class McpYoloModeTest {
         runBlocking {
             val f = Fixture()
             f.policyEngine.setToolPolicy("run_command", McpPolicyAction.DENY)
-            f.policyEngine.setYoloMode(true)
+            f.core.setYoloMode(true)
             assertTrue(f.core.invoke("run_command", "{}").isError)
             assertEquals(0, f.calls)
             assertEquals(McpApprovalDisposition.POLICY_DENIED, f.lastDisposition())
@@ -94,7 +97,7 @@ class McpYoloModeTest {
         runBlocking {
             val f = Fixture()
             f.policyEngine.setProviderPolicy("p1", McpPolicyAction.DENY)
-            f.policyEngine.setYoloMode(true)
+            f.core.setYoloMode(true)
             assertTrue(f.core.invoke("run_command", "{}").isError)
             assertEquals(0, f.calls)
         }
@@ -104,8 +107,8 @@ class McpYoloModeTest {
         runBlocking {
             val f = Fixture()
             assertFalse(f.policyEngine.yoloMode.value)
-            f.policyEngine.setYoloMode(true)
-            f.policyEngine.setYoloMode(false)
+            f.core.setYoloMode(true)
+            f.core.setYoloMode(false)
             val call = async { f.core.invoke("run_command", "{}") }
             val req =
                 f.approvalBus.pendingList
@@ -116,4 +119,48 @@ class McpYoloModeTest {
             assertEquals(0, f.calls)
             assertEquals(McpApprovalDisposition.DENIED_BY_OPERATOR, f.lastDisposition())
         }
+
+    @Test
+    fun `switching yolo writes one ledger marker per real transition, not counted as a call`() =
+        runBlocking {
+            val f = Fixture()
+            f.core.setYoloMode(true)
+            f.core.setYoloMode(true) // no-op: no second marker
+            f.core.setYoloMode(false)
+            val markers =
+                f.ledger.recentOperations.value
+                    .map { it.approvalDisposition }
+            assertEquals(listOf(McpApprovalDisposition.YOLO_DISABLED, McpApprovalDisposition.YOLO_ENABLED), markers)
+            assertEquals(
+                McpYoloMode.LEDGER_TOOL_NAME,
+                f.ledger.recentOperations.value
+                    .first()
+                    .toolName,
+            )
+            assertEquals(0L, f.ledger.totalCalls.value)
+        }
+
+    @Test
+    fun `a deployment that refuses yolo cannot turn it on`() =
+        runBlocking {
+            val f = Fixture(yoloAvailable = false)
+            assertFalse(f.core.setYoloMode(true))
+            assertFalse(f.policyEngine.yoloMode.value)
+            assertTrue(
+                f.ledger.recentOperations.value
+                    .isEmpty(),
+            )
+            // Turning it off is never refused.
+            assertTrue(f.core.setYoloMode(false))
+        }
+
+    @Test
+    fun `the deployment switch accepts the usual truthy spellings and ignores a blank env`() {
+        assertTrue(McpYoloGate.disabledFrom("true", null))
+        assertTrue(McpYoloGate.disabledFrom(" ON ", null))
+        assertTrue(McpYoloGate.disabledFrom("1", null))
+        assertTrue(McpYoloGate.disabledFrom("", "yes"))
+        assertFalse(McpYoloGate.disabledFrom(null, null))
+        assertFalse(McpYoloGate.disabledFrom("false", "true"))
+    }
 }

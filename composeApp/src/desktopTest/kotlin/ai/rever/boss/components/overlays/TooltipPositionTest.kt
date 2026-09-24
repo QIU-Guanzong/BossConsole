@@ -50,4 +50,13 @@ class TooltipPositionTest {
         val pos = tooltipPosition(TooltipPlacement.END, edge, window, popup)
         assertFalse(overlaps(pos, popup, edge))
     }
+
+    @Test
+    fun `a flipped card is still clamped inside a short window`() {
+        val short = IntSize(400, 40)
+        val anchor = IntRect(10, 0, 60, 20)
+        val popup = IntSize(100, 24)
+        val pos = tooltipPosition(TooltipPlacement.TOP, anchor, short, popup)
+        assertEquals(16, pos.y) // 40 - 24, not anchor.bottom + gap = 26
+    }
 }

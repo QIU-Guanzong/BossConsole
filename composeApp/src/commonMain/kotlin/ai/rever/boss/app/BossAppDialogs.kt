@@ -7,6 +7,7 @@ import ai.rever.boss.components.dialogs.GlobalSearchDialog
 import ai.rever.boss.components.dialogs.HtmlFileOpenDialog
 import ai.rever.boss.components.dialogs.LogoutConfirmationDialog
 import ai.rever.boss.components.dialogs.McpApprovalDialog
+import ai.rever.boss.components.dialogs.McpYoloConfirmation
 import ai.rever.boss.components.dialogs.NewProjectWizardDialog
 import ai.rever.boss.components.dialogs.NewTabDialog
 import ai.rever.boss.components.dialogs.ProjectOpenModeDialog
@@ -853,6 +854,9 @@ internal fun BossAppDialogs(state: BossAppState) {
 
     // The same question for a Space whose terminal tabs carry commands.
     SpaceLoadPrompt(state)
+
+    // YOLO mode's confirmation, raised from the bottom bar or the Tools menu (McpYoloPrompt).
+    McpYoloConfirmation(windowId)
 
     // Interactive approval dialog for governed MCP tools invoked by an AI agent
     state.pendingMcpApproval?.let { approvalRequest ->

@@ -213,7 +213,9 @@ fun McpApprovalDialog(
                         )
                         ScopeOption(
                             title = "Always, for this tool",
-                            description = "Saved for all agents and arguments, across restarts.",
+                            description =
+                                "Saved by tool name for all agents and arguments, across restarts - " +
+                                    "including a replacement plugin that ships a tool with this name.",
                             selected = scope == McpApprovalScope.ALWAYS_TOOL,
                             onSelect = { scope = McpApprovalScope.ALWAYS_TOOL },
                         )
@@ -275,7 +277,7 @@ fun McpApprovalDialog(
                             contentPadding = PaddingValues(horizontal = 8.dp),
                             modifier = Modifier.height(DIALOG_BUTTON_HEIGHT),
                         ) {
-                            Text("Add note...", fontSize = 12.sp)
+                            Text("Add denial note...", fontSize = 12.sp)
                         }
                     }
                     Spacer(modifier = Modifier.weight(1f))
@@ -472,8 +474,9 @@ private fun ScopeOption(
         RadioButton(
             selected = selected,
             onClick = null,
+            // No size override: the whole row is the selectable target, and shrinking the control
+            // below Material's own size only made the radio itself harder to hit.
             colors = RadioButtonDefaults.colors(selectedColor = colors.signal, unselectedColor = colors.textSecondary),
-            modifier = Modifier.size(20.dp),
         )
         Spacer(modifier = Modifier.width(10.dp))
         Column {

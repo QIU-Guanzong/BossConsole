@@ -330,6 +330,8 @@ internal val McpApprovalDisposition.unsuccessfulCategory: McpUnsuccessfulCategor
             McpApprovalDisposition.PROVIDER_TRUSTED,
             McpApprovalDisposition.PROVIDER_TRUST_PERSIST_FAILED,
             McpApprovalDisposition.YOLO_ALLOWED,
+            McpApprovalDisposition.YOLO_ENABLED,
+            McpApprovalDisposition.YOLO_DISABLED,
             -> McpUnsuccessfulCategory.FAILED
         }
 

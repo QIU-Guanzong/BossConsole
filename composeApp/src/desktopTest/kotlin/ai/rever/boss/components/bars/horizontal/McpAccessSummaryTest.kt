@@ -67,4 +67,15 @@ class McpAccessSummaryTest {
         assertEquals(listOf("Turn off YOLO mode", "---", "Tool policies..."), labels(on))
         assertEquals("MCP access", McpAccessSummary(0, 0, 0).label)
     }
+
+    @Test
+    fun `a deployment that refuses yolo does not offer it`() {
+        assertEquals(listOf("Tool policies..."), labels(McpAccessSummary(0, 0, 0, yoloAvailable = false)))
+    }
+
+    @Test
+    fun `the session badge is read as a sentence, not a number`() {
+        assertEquals("2 tools trusted for this session", McpAccessSummary(0, 0, 2).sessionGrantsDescription())
+        assertEquals("1 tool trusted for this session", McpAccessSummary(0, 0, 1).sessionGrantsDescription())
+    }
 }

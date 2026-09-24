@@ -58,6 +58,25 @@ enum class McpApprovalDisposition {
      * call nobody looked at from one somebody approved.
      */
     YOLO_ALLOWED,
+
+    /**
+     * Governance events, not tool calls: the operator switched YOLO mode on or off. Recorded in
+     * the ledger (tool name [McpYoloMode.LEDGER_TOOL_NAME]) so the window during which calls could
+     * run unattended is part of the hash-chained audit trail even if nothing was invoked in it.
+     * See [isGovernanceEvent].
+     */
+    YOLO_ENABLED,
+    YOLO_DISABLED,
+    ;
+
+    /** True for the [YOLO_ENABLED] / [YOLO_DISABLED] ledger markers, which are not tool calls. */
+    val isGovernanceEvent: Boolean get() = this == YOLO_ENABLED || this == YOLO_DISABLED
+}
+
+/** Constants for YOLO mode's ledger markers. */
+object McpYoloMode {
+    const val LEDGER_TOOL_NAME = "yolo_mode"
+    const val LEDGER_PROVIDER_ID = "host"
 }
 
 /**

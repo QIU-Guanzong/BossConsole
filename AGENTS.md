@@ -2128,18 +2128,40 @@ always for every tool from this plugin) and answers with one Deny / Allow pair w
 the effect; there is no session or provider-wide deny, so under those scopes Deny reads “Deny
 once”. The bottom bar shows all three consent surfaces (session trust, tool policies, trusted
 plugins) behind one “MCP access” item, badged in the alert colour while session trust is live.
-**YOLO mode** (MCP access → YOLO mode..., behind a confirmation, available to every user) makes
-any call whose policy resolves to ASK run without prompting, for every tool and provider,
-CRITICAL-risk ones and tools registered later included. It replaces only the prompt:
-`policyFor` is untouched, so explicit tool or provider DENY, an unreadable policy file, the kill
-switch and RBAC still refuse first. In memory only (`McpPolicyEngine.yoloMode`), off at every
-launch; prompts already queued when it is turned on still ask. Each call it lets through is
-ledgered as `YOLO_ALLOWED` with `policyApplied = ASK`, so an audit can tell unattended calls
-from approved ones, and the bar item reads "MCP: YOLO" in the alert colour while it is on.
+The "Always, for this tool" scope says in the dialog that it is keyed by tool name, so it also
+covers a replacement plugin shipping a tool of that name - the one place the operator is told.
 Provider trust also covers tools added by later versions and replacement plugins claiming
 that provider id. Already queued sibling prompts still ask. Explicit tool ASK rules
 still override provider ALLOW. The Trusted plugins UI lists ALLOW rules only; hand-edited
 provider DENY rules currently require policy-file editing to remove.
+
+**YOLO mode** makes any call whose policy resolves to ASK run without prompting, for every tool
+and provider, CRITICAL-risk ones and tools registered later included. Any user can turn it on,
+behind one confirmation (`McpYoloConfirmation`, composed per window in `BossAppDialogs` and
+raised through `McpYoloPrompt`), from either of two places: **MCP access → YOLO mode...** in the
+bottom bar, or the **Tools → MCP YOLO Mode** checkbox in the application menu. The menu item is
+not a convenience: the bar can be hidden (`showBottomBar`, and Focus mode hides it by default),
+and a live global bypass must keep an indicator and an off switch that survive that. Its
+checkmark is the indicator and unchecking turns the mode off; in the bar it reads "MCP: YOLO"
+in the alert colour with "Turn off YOLO mode" first in the menu.
+
+- **It replaces only the prompt.** `policyFor` is untouched, so explicit tool or provider DENY,
+  an unreadable policy file, the kill switch and RBAC still refuse first, and a revoke or DENY
+  landing mid-flight still stops the call at `confirmInvocation`. `McpYoloModeTest` drives the
+  real registry to pin this.
+- **In memory only** (`McpPolicyEngine.yoloMode`), off at every launch. Prompts already queued
+  when it is turned on still ask.
+- **Audited in the ledger, both the calls and the switch.** Each call it lets through is
+  `YOLO_ALLOWED` with `policyApplied = ASK`. Turning it on or off writes a `YOLO_ENABLED` /
+  `YOLO_DISABLED` marker (tool `yolo_mode`, provider `host`) through `McpToolRegistryCore
+  .setYoloMode`, so a window in which calls could run unattended is in the hash-chained record
+  even if nothing was invoked. Markers do not count as calls (`countsAsCall = false`), and the
+  bar's last-call line skips them (`isGovernanceEvent`). Always switch through
+  `McpToolRegistryImpl.setYoloMode`, never `policyEngine.setYoloMode` directly, or the marker is
+  lost.
+- **A deployment can refuse it**: `BOSS_MCP_YOLO_DISABLED=true` (also `1` / `yes` / `on`) or
+  `-Dboss.mcp.yolo.disabled=true` hides both entry points and makes turning it on a logged no-op.
+  Read once at startup (`McpYoloGate`). Turning it off is never refused.
 
 Preserve a backup before manual recovery of a damaged policy;
 the fault flow withholds all tools until recovery. No automatic quarantine UI is

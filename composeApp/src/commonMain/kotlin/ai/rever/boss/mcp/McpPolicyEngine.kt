@@ -476,7 +476,7 @@ class McpPolicyEngine(
      * time. Weaker than an explicit tool-specific rule: see [policyFor].
      *
      * [preserveDeny]/[expectedRevocation]/[toolName] mirror [setToolPolicy]'s own guards: a
-     * queued "Trust This Plugin" click is answering for the *tool* that prompted it, so its
+     * queued "Trust plugin" click is answering for the *tool* that prompted it, so its
      * write must recheck that tool's revocation/DENY state under this same lock, not only at
      * the caller's pre-check - otherwise a reset landing between the pre-check and the write
      * (BossConsole#542 review) persists a provider-wide grant the reset was supposed to
@@ -532,7 +532,7 @@ class McpPolicyEngine(
      *
      * Does not touch session trust for the provider's tools, unlike
      * [revokePersistedPolicy] for a single tool: session trust is a separate, in-session grant
-     * the operator manages from the "Revoke MCP session trust" control, and revoking a
+     * the operator manages from "Session trust" in the MCP access menu, and revoking a
      * durable provider rule must not silently withdraw grants the operator made per tool.
      */
     fun revokeProviderPolicy(providerId: String): Boolean =
@@ -560,7 +560,7 @@ class McpPolicyEngine(
      * calling `setToolPolicy(toolName, ASK)`, which - because [setToolPolicy] always writes
      * `rules + (toolName to action)` - left the key in the map forever, just holding ASK instead
      * of its old value. Three consequences that all trace back to that one line: the bottom bar's
-     * "Persisted MCP policies (n)" count never dropped after a revoke, because the row was still
+     * "Tool policies (n)" count never dropped after a revoke, because the row was still
      * there; the policy manager dialog kept listing the "revoked" tool with a Reset button that
      * rewrote the same value and reported success; and on a config with `defaultMutatingAction =
      * DENY`, the explicit ASK a revoke left behind was *weaker* than the operator's own configured

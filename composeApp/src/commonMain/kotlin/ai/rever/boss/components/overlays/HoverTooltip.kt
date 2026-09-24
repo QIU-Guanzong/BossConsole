@@ -146,9 +146,10 @@ private class TooltipPositionProvider(
 
 /**
  * Where a tooltip card of [popup] size goes against [anchor], in window coordinates, kept inside
- * [window]. It never overlaps the anchor: if TOP has no room above, the card flips below, and END
- * flips to the leading side. Overlapping the anchor is what made the tooltip blink (see the call
- * site).
+ * [window]. The preferred side is used when the card fits there; otherwise it flips (TOP to below,
+ * END to the leading side), because overlapping the anchor is what made the tooltip blink (see
+ * the call site). When neither side fits, the final clamp keeps the card visible, and visible
+ * wins over not overlapping: a card larger than the space around its anchor can then cover it.
  */
 internal fun tooltipPosition(
     placement: TooltipPlacement,
@@ -163,13 +164,13 @@ internal fun tooltipPosition(
         TooltipPlacement.TOP -> {
             val above = anchor.top - popup.height - TOOLTIP_GAP_PX
             val y = if (above >= 0) above else anchor.bottom + TOOLTIP_GAP_PX
-            IntOffset(clampX(anchor.left + (anchor.width - popup.width) / 2), y)
+            IntOffset(clampX(anchor.left + (anchor.width - popup.width) / 2), clampY(y))
         }
 
         TooltipPlacement.END -> {
             val after = anchor.right + TOOLTIP_GAP_PX
             val x = if (after + popup.width <= window.width) after else anchor.left - popup.width - TOOLTIP_GAP_PX
-            IntOffset(x.coerceAtLeast(0), clampY(anchor.top + (anchor.height - popup.height) / 2))
+            IntOffset(clampX(x), clampY(anchor.top + (anchor.height - popup.height) / 2))
         }
     }
 }
