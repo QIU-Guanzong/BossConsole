@@ -19,14 +19,14 @@ class McpAccessSummaryTest {
     @Test
     fun `every control the bar used to show is reachable from the menu`() {
         assertEquals(
-            listOf("Tool policies (3)...", "Session trust (1)...", "Trusted plugins (2)..."),
+            listOf("Tool policies (3)...", "Session trust (1)...", "Trusted plugins (2)...", "---", "YOLO mode..."),
             labels(McpAccessSummary(savedRules = 3, trustedPlugins = 2, sessionGrants = 1)),
         )
     }
 
     @Test
     fun `entries that would do nothing are left out, but tool policies always stays`() {
-        assertEquals(listOf("Tool policies..."), labels(McpAccessSummary(0, 0, 0)))
+        assertEquals(listOf("Tool policies...", "---", "YOLO mode..."), labels(McpAccessSummary(0, 0, 0)))
     }
 
     @Test
@@ -37,7 +37,7 @@ class McpAccessSummaryTest {
             onPolicies = { fired += "policies" },
             onSessionTrust = { fired += "session" },
             onTrustedPlugins = { fired += "plugins" },
-        ).forEach { it.onClick() }
+        ).filterNot { it.isDivider || it.text == "YOLO mode..." }.forEach { it.onClick() }
         assertEquals(listOf("policies", "session", "plugins"), fired)
     }
 
@@ -57,5 +57,14 @@ class McpAccessSummaryTest {
         assertEquals("12.4s", formatMcpDuration(12_480))
         assertEquals("4m 16s", formatMcpDuration(256_100))
         assertEquals("0ms", formatMcpDuration(-5))
+    }
+
+    @Test
+    fun `while yolo is on the bar says so and turning it off comes first`() {
+        val on = McpAccessSummary(0, 0, 0, yolo = true)
+        assertEquals("MCP: YOLO", on.label)
+        assertTrue(on.isVisible(hasTools = false))
+        assertEquals(listOf("Turn off YOLO mode", "---", "Tool policies..."), labels(on))
+        assertEquals("MCP access", McpAccessSummary(0, 0, 0).label)
     }
 }

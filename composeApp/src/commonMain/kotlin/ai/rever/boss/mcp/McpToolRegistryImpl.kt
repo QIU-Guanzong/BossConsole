@@ -964,6 +964,12 @@ internal class McpToolRegistryCore(
                 McpApprovalDisposition.AUTO_ALLOWED to null
             }
 
+            // YOLO answers the prompt, and only the prompt: DENY above, the kill switch and RBAC
+            // are all decided before this branch is reached.
+            McpPolicyAction.ASK if policyEngine.yoloMode.value -> {
+                McpApprovalDisposition.YOLO_ALLOWED to null
+            }
+
             McpPolicyAction.ASK -> {
                 when (
                     val decision =

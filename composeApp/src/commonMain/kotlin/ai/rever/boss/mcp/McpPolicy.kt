@@ -51,6 +51,13 @@ enum class McpApprovalDisposition {
      * fault) but the durable grant does not exist. See [McpPolicyFault.ProviderPolicyPersistFailed].
      */
     PROVIDER_TRUST_PERSIST_FAILED,
+
+    /**
+     * The policy was ASK and the call ran without a prompt because the operator had
+     * [ai.rever.boss.mcp.McpPolicyEngine.yoloMode] on. Its own value, so an audit can tell a
+     * call nobody looked at from one somebody approved.
+     */
+    YOLO_ALLOWED,
 }
 
 /**

@@ -329,6 +329,7 @@ internal val McpApprovalDisposition.unsuccessfulCategory: McpUnsuccessfulCategor
             McpApprovalDisposition.PERSISTENTLY_ALLOWED,
             McpApprovalDisposition.PROVIDER_TRUSTED,
             McpApprovalDisposition.PROVIDER_TRUST_PERSIST_FAILED,
+            McpApprovalDisposition.YOLO_ALLOWED,
             -> McpUnsuccessfulCategory.FAILED
         }
 

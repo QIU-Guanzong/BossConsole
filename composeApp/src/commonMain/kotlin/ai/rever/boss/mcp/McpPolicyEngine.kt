@@ -278,6 +278,31 @@ class McpPolicyEngine(
         _sessionTrustedTools.value = emptySet()
     }
 
+    private val _yoloMode = MutableStateFlow(false)
+
+    /**
+     * YOLO mode: while true, a call whose policy resolves to ASK runs without prompting, recorded
+     * as [McpApprovalDisposition.YOLO_ALLOWED]. It covers every tool and provider, including ones
+     * registered after it was turned on, and CRITICAL-risk calls too - that is the operator's
+     * explicit choice, made through a confirmation that says so.
+     *
+     * It replaces only the PROMPT. [policyFor] is untouched, so everything decided before a
+     * prompt still decides: an explicit tool or provider DENY, an unreadable policy file, the
+     * kill switch and RBAC (both refuse before the policy engine is consulted). In memory only,
+     * never persisted: every launch starts with it off. Prompts already queued when it is
+     * turned on still ask.
+     */
+    val yoloMode: StateFlow<Boolean> = _yoloMode.asStateFlow()
+
+    fun setYoloMode(enabled: Boolean) {
+        if (_yoloMode.value == enabled) return
+        _yoloMode.value = enabled
+        logger.warn(
+            LogCategory.SYSTEM,
+            if (enabled) "MCP YOLO mode enabled for this session" else "MCP YOLO mode disabled",
+        )
+    }
+
     /**
      * Persists an already-built config and publishes the result the same way for every
      * caller - [setToolPolicy]'s add/replace, [revokePersistedPolicy]'s remove,

@@ -2128,6 +2128,14 @@ always for every tool from this plugin) and answers with one Deny / Allow pair w
 the effect; there is no session or provider-wide deny, so under those scopes Deny reads “Deny
 once”. The bottom bar shows all three consent surfaces (session trust, tool policies, trusted
 plugins) behind one “MCP access” item, badged in the alert colour while session trust is live.
+**YOLO mode** (MCP access → YOLO mode..., behind a confirmation, available to every user) makes
+any call whose policy resolves to ASK run without prompting, for every tool and provider,
+CRITICAL-risk ones and tools registered later included. It replaces only the prompt:
+`policyFor` is untouched, so explicit tool or provider DENY, an unreadable policy file, the kill
+switch and RBAC still refuse first. In memory only (`McpPolicyEngine.yoloMode`), off at every
+launch; prompts already queued when it is turned on still ask. Each call it lets through is
+ledgered as `YOLO_ALLOWED` with `policyApplied = ASK`, so an audit can tell unattended calls
+from approved ones, and the bar item reads "MCP: YOLO" in the alert colour while it is on.
 Provider trust also covers tools added by later versions and replacement plugins claiming
 that provider id. Already queued sibling prompts still ask. Explicit tool ASK rules
 still override provider ALLOW. The Trusted plugins UI lists ALLOW rules only; hand-edited
