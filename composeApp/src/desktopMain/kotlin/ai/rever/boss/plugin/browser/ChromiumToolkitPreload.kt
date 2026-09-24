@@ -36,7 +36,9 @@ import java.nio.file.Path
  * **What it does not.** It narrows the race rather than removing it: JVM service threads (GC,
  * JIT) still run. `libawt_toolkit` is deliberately NOT preloaded - it links `@rpath/libjawt.dylib`
  * and so must load after AWT - and it still swaps zones when JxBrowser loads it for the first
- * browser view. Only moving JxBrowser out of the host process removes the family.
+ * browser view. A first-run download-then-boot gets no preload either (see the call site). Only
+ * moving JxBrowser out of the host process removes the family. The offsets above are for this
+ * JxBrowser build: re-measure after a bump before relying on them.
  *
  * Off switch: `BOSS_TOOLKIT_PRELOAD=false` (also `0` / `no` / `off`) or
  * `-Dboss.toolkit.preload=false`.
@@ -50,30 +52,64 @@ object ChromiumToolkitPreload {
     private const val DISABLED_KEY = "BOSS_TOOLKIT_PRELOAD"
     private const val DISABLED_PROPERTY = "boss.toolkit.preload"
 
+    /** What [plan] decided: the files to load, in order, or why nothing is loaded. */
+    internal sealed interface Plan {
+        data class Load(
+            val files: List<File>,
+        ) : Plan
+
+        data class Skip(
+            val reason: String,
+        ) : Plan
+    }
+
     /**
-     * The native libraries to preload for the engine at [engineDir], or empty when there is
-     * nothing safe to load: not macOS, no `executable.name`, or the framework does not carry
+     * The native libraries to preload for the engine at [engineDir], or why there is nothing safe
+     * to load: not macOS, no usable `executable.name`, or the framework does not carry
      * [chromiumVersion] (the build this jar was compiled against - loading anything else would be
      * the version-mismatch failure `FluckEngine.chromiumVersionMismatch` exists to report, not
-     * cause). Pure, so the path rule is testable off macOS.
+     * cause).
+     *
+     * [executableName] is a function so it is only read on macOS: every other OS skips before the
+     * file is touched. Its content comes from a user-writable cache and ends up in a path handed
+     * to `System.load`, so it must be a plain bundle name - no separators, no `..` - and every
+     * resolved file must still sit under [engineDir]. Pure apart from `isFile`, so the rule is
+     * testable off macOS.
      */
-    internal fun librariesFor(
+    @Suppress("ReturnCount") // One early Skip per reason, each named.
+    internal fun plan(
         engineDir: Path,
         isMac: Boolean,
-        executableName: String?,
+        executableName: () -> String?,
         chromiumVersion: String,
-    ): List<File> {
-        if (!isMac || executableName.isNullOrBlank()) return emptyList()
+    ): Plan {
+        if (!isMac) return Plan.Skip("not macOS")
+        val name = executableName()?.trim()
+        if (name.isNullOrEmpty() || !SAFE_BUNDLE_NAME.matches(name) || name.contains("..")) {
+            return Plan.Skip("no usable executable.name")
+        }
+        val root = engineDir.toFile().canonicalFile
         val libraries =
             engineDir
-                .resolve("$executableName.app/Contents/Frameworks/Chromium Framework.framework/Versions")
+                .resolve("$name.app/Contents/Frameworks/Chromium Framework.framework/Versions")
                 .resolve(chromiumVersion)
                 .resolve("Libraries")
                 .toFile()
         val files = PRELOADED_LIBRARIES.map { libraries.resolve(it) }
-        return if (files.all { it.isFile }) files else emptyList()
+        return when {
+            files.any { !it.canonicalFile.startsWith(root) } -> Plan.Skip("library outside the engine directory")
+            files.any { !it.isFile } -> Plan.Skip("engine does not carry Chromium $chromiumVersion")
+            else -> Plan.Load(files)
+        }
     }
 
+    /** A bundle name as the engine archives write it ("BOSS"): letters, digits, space, `._-`. */
+    private val SAFE_BUNDLE_NAME = Regex("[A-Za-z0-9 ._-]+")
+
+    /**
+     * Env wins over the system property, matching `BOSS_BROWSER_TELEMETRY_DISABLED` and the MCP
+     * kill switch; a blank env var does not shadow the property.
+     */
     internal fun disabledFrom(
         env: String?,
         property: String?,
@@ -85,63 +121,122 @@ object ChromiumToolkitPreload {
     /**
      * Preload for [engineDir], the directory the engine will boot from (the caller resolves it
      * with the same `FluckEngine.resolveEngineDir` the engine uses, so the path JxBrowser loads
-     * later is this one). Never throws: a failure here must not stop a launch that would
-     * otherwise have worked, and JxBrowser still loads the libraries itself.
+     * later is this one).
      *
-     * Returns how many libraries were loaded, for the log and tests.
+     * Never throws, and the whole body is inside the guard so that holds for the logger too: a
+     * failure here must not stop a launch that would otherwise have worked, and JxBrowser still
+     * loads the libraries itself. Every outcome is logged - including each skip reason - so a
+     * crash report can be matched to whether this mitigation was in effect.
+     *
+     * **Requires** that `com.teamdev.jxbrowser.*` is loaded by the same class loader as this
+     * object. A native library is owned by the loader of the class that called `System.load`,
+     * and a second loader asking for it gets `UnsatisfiedLinkError: already loaded in another
+     * classloader` - which would break the engine rather than protect it. Today JxBrowser is a
+     * host `implementation` dependency and no plugin bundles it.
+     *
+     * [load] is injectable for tests; production passes `System::load`. Returns how many libraries
+     * were loaded.
      */
-    // TooGenericExceptionCaught: UnsatisfiedLinkError is an Error and nothing may escape.
-    // ReturnCount: no engine, switched off, and loaded are three distinct outcomes.
-    @Suppress("TooGenericExceptionCaught", "ReturnCount")
-    fun preload(engineDir: Path?): Int {
-        if (engineDir == null) return 0
-        if (disabledFrom(System.getenv(DISABLED_KEY), System.getProperty(DISABLED_PROPERTY))) {
-            logger.info(LogCategory.BROWSER, "Native toolkit preload disabled")
-            return 0
+    // TooGenericExceptionCaught: the guarantee is "never throws"; LinkageError covers
+    // UnsatisfiedLinkError, which is an Error, and nothing narrower would keep the promise.
+    @Suppress("TooGenericExceptionCaught")
+    fun preload(
+        engineDir: Path?,
+        load: (String) -> Unit = System::load,
+    ): Int =
+        try {
+            preloadUnguarded(engineDir, load)
+        } catch (e: Exception) {
+            runCatching { logger.warn(LogCategory.BROWSER, "Native toolkit preload aborted", error = e) }
+            0
+        } catch (e: LinkageError) {
+            runCatching { logger.warn(LogCategory.BROWSER, "Native toolkit preload aborted", error = e) }
+            0
         }
+
+    @Suppress("ReturnCount") // One early return per named skip.
+    private fun preloadUnguarded(
+        engineDir: Path?,
+        load: (String) -> Unit,
+    ): Int {
+        if (engineDir == null) return skipped("no engine directory")
+        if (disabledFrom(System.getenv(DISABLED_KEY), System.getProperty(DISABLED_PROPERTY))) {
+            return skipped("disabled by $DISABLED_KEY / -D$DISABLED_PROPERTY")
+        }
+        val plan =
+            plan(
+                engineDir = engineDir,
+                isMac =
+                    System
+                        .getProperty("os.name")
+                        .orEmpty()
+                        .lowercase()
+                        .contains("mac"),
+                executableName = {
+                    engineDir
+                        .resolve("executable.name")
+                        .toFile()
+                        .takeIf { it.isFile }
+                        ?.readText()
+                },
+                chromiumVersion =
+                    com.teamdev.jxbrowser.VersionInfo
+                        .chromiumVersion(),
+            )
         val files =
-            runCatching {
-                librariesFor(
-                    engineDir = engineDir,
-                    isMac =
-                        System
-                            .getProperty("os.name")
-                            .orEmpty()
-                            .lowercase()
-                            .contains("mac"),
-                    executableName =
-                        engineDir
-                            .resolve("executable.name")
-                            .toFile()
-                            .readText()
-                            .trim(),
-                    chromiumVersion =
-                        com.teamdev.jxbrowser.VersionInfo
-                            .chromiumVersion(),
-                )
-            }.getOrDefault(emptyList())
+            when (plan) {
+                is Plan.Skip -> return skipped(plan.reason)
+                is Plan.Load -> plan.files
+            }
+        val startNanos = System.nanoTime()
         var loaded = 0
         for (file in files) {
-            try {
-                System.load(file.canonicalPath)
-                loaded++
-            } catch (t: Throwable) {
-                logger.warn(
-                    LogCategory.BROWSER,
-                    "Native toolkit preload failed; JxBrowser will load it later",
-                    mapOf("library" to file.name),
-                    error = t,
-                )
+            val failure = loadOne(file, load)
+            if (failure != null) {
+                logFailure(file, failure)
                 break
             }
+            loaded++
         }
         if (loaded > 0) {
             logger.info(
                 LogCategory.BROWSER,
                 "Preloaded native toolkit on the main thread",
-                mapOf("libraries" to loaded),
+                mapOf("libraries" to loaded, "durationMs" to (System.nanoTime() - startNanos) / 1_000_000),
             )
         }
         return loaded
+    }
+
+    /** Loads [file], returning what went wrong instead of throwing. */
+    @Suppress("TooGenericExceptionCaught") // LinkageError is how a failed System.load surfaces.
+    private fun loadOne(
+        file: File,
+        load: (String) -> Unit,
+    ): Throwable? =
+        try {
+            load(file.canonicalPath)
+            null
+        } catch (e: Exception) {
+            e
+        } catch (e: LinkageError) {
+            e
+        }
+
+    private fun skipped(reason: String): Int {
+        logger.info(LogCategory.BROWSER, "Native toolkit preload skipped", mapOf("reason" to reason))
+        return 0
+    }
+
+    private fun logFailure(
+        file: File,
+        error: Throwable,
+    ) {
+        logger.warn(
+            LogCategory.BROWSER,
+            "Native toolkit preload failed; JxBrowser will load it later",
+            mapOf("library" to file.name),
+            error = error,
+        )
     }
 }

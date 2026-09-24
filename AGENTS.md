@@ -767,23 +767,22 @@ callers or engine-level forced closure.
 
 ## JxBrowser's native libraries swap the process's malloc zones when they load
 
-On macOS, `libtoolkit`, `libipc` and `libawt_toolkit` each carry Chromium's allocator shim, and a
-static initializer in each makes PartitionAlloc the default malloc zone the way Chromium does:
-register its zone, **unregister the system default zone**, re-register it. Between the last two
-calls the system zone is not listed, and a `free()` on any other thread lands in the shim's
-fallback, finds no owning zone and executes `brk #0` - EXC_BREAKPOINT / SIGTRAP, uncatchable from
-Java. Measured on 2026-09-23 (JxBrowser 9.5.0 / Chromium 152.0.7977.65): crash PC
-`libtoolkit+0x4b178`, main thread in `ClassLoader.defineClass1`, `fluck-engine-prewarm` alive,
-~0.8s after launch. The 27 July 2026 release crash (9.2.60, +514ms) has the same signature.
+On macOS each of JxBrowser's JNI libraries (`libtoolkit`, `libipc`, `libawt_toolkit`) makes
+PartitionAlloc the default malloc zone in a static initializer, briefly unregistering the system
+zone; a `free()` on another thread in that gap is an uncatchable SIGTRAP. `ChromiumToolkitPreload`
+loads the first two on the main thread before the engine pre-warm. Its KDoc is the canonical
+account (mechanism, measurements, what it does not cover); keep it there rather than here.
 
-`ChromiumToolkitPreload` therefore `System.load`s `libtoolkit` and `libipc` on the **main thread**
-from `ChromiumBootstrap.prepare()`, before the pre-warm thread exists, from the directory
-`FluckEngine.resolveEngineDir` picks (so JxBrowser's own later load of the same canonical path is
-a JVM no-op - never preload from a different directory, or the library loads twice and swaps zones
-twice). Only when the engine will boot and carries the jar's Chromium build. This narrows the race
-rather than removing it: JVM service threads still run, and `libawt_toolkit` is not preloaded
-because it links `@rpath/libjawt.dylib` and must follow AWT. Off switch: `BOSS_TOOLKIT_PRELOAD=false`.
-Only moving JxBrowser out of the host process removes this family.
+Rules for anyone touching it:
+
+- **Preload only from the directory `FluckEngine.resolveEngineDir` boots**, or the library loads
+  twice from two paths and swaps zones twice.
+- **JxBrowser must stay in the host class loader.** A plugin that bundled JxBrowser would get
+  `already loaded in another classloader` for a library the host preloaded.
+- **Known gaps:** `libawt_toolkit` is not preloaded (it links `libjawt` and must follow AWT), and
+  a first-run download-then-boot gets no preload. Off switch: `BOSS_TOOLKIT_PRELOAD=false`.
+- **Re-measure after a JxBrowser bump.** The offsets in the KDoc are for 9.5.0 / Chromium
+  152.0.7977.65; check the zone swap still sits in a static initializer before trusting them.
 
 ## Browser telemetry, and how to turn it off
 

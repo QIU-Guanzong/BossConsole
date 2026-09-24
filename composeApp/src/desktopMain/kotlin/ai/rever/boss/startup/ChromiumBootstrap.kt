@@ -76,6 +76,9 @@ object ChromiumBootstrap {
         // exists: loading it swaps the process's malloc zones, and a free() on another thread
         // during that swap is an uncatchable SIGTRAP. Same directory the engine will boot from,
         // so JxBrowser's own System.load later is a no-op. See ChromiumToolkitPreload.
+        // Boot only: on Download the engine is not on disk yet, and the boot that follows a
+        // first-run download happens once the app is running, where loading here would be no
+        // quieter than JxBrowser's own load - that path keeps the original window, knowingly.
         if (engineAction == FluckEngine.EngineStartupAction.Boot) {
             ChromiumToolkitPreload.preload(FluckEngine.resolveEngineDir(cacheHealthy))
         }
