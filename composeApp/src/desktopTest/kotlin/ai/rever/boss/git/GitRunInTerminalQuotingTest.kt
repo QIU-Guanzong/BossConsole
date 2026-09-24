@@ -1,22 +1,42 @@
 package ai.rever.boss.git
 
-import ai.rever.boss.components.workspaces.CommandProcessor
 import ai.rever.boss.components.workspaces.ShellPathQuoting
+import org.junit.jupiter.api.Assumptions.assumeTrue
+import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 /**
- * Pins the quoting on [GitService.runInTerminal]: it builds a shell command string, so an
- * argument containing `;`, `|` or `$()` must arrive single-quoted and inert rather than
- * live shell. There is no in-repo caller today - the test exists so the first one does not
- * open an injection hole.
+ * Verifies the exact command built for [GitService.runInTerminal] and, on POSIX hosts,
+ * checks that a shell parses it back into the original arguments without evaluating them.
  */
 class GitRunInTerminalQuotingTest {
     @Test
-    fun `runInTerminal command builder quotes every argument independently`() {
+    fun `builder emits the expected host quoted command`() {
+        val arguments = listOf("status", "O'Reilly", "\$(touch sentinel)", "")
+        val expected =
+            if (isWindows()) {
+                "git 'status' 'O''Reilly' '\$(touch sentinel)' ''"
+            } else {
+                "git 'status' 'O'\\''Reilly' '\$(touch sentinel)' ''"
+            }
+
+        assertEquals(expected, buildGitTerminalCommand(arguments))
+    }
+
+    @Test
+    fun `built POSIX command yields every argument literally`() {
+        val shell = File("/bin/sh")
+        assumeTrue(shell.isFile, "requires /bin/sh")
+
+        val directory = Files.createTempDirectory("git-run-in-terminal").toFile()
+        val sentinel = directory.resolve("shell-command-ran")
         val arguments =
             listOf(
                 "status",
@@ -24,75 +44,81 @@ class GitRunInTerminalQuotingTest {
                 "\"",
                 "\\",
                 "",
-                "\$(touch sentinel)",
-                "`touch sentinel`",
+                "\$(touch \"${sentinel.absolutePath}\")",
+                "`touch \"${sentinel.absolutePath}\"`",
                 "line one\nline two",
-                ";",
-                "|",
-                "&&",
-            )
-
-        val expected = arguments.joinToString(" ", prefix = "git ") { CommandProcessor.quotePath(it) }
-        assertEquals(expected, buildGitTerminalCommand(arguments))
-
-        for (argument in arguments) {
-            assertEquals(argument, unquotePosix(ShellPathQuoting.posix(argument)), "POSIX: $argument")
-            assertEquals(
-                argument,
-                unquotePowerShell(ShellPathQuoting.powershell(argument)),
-                "PowerShell: $argument",
-            )
-            val hostQuoted = CommandProcessor.quotePath(argument)
-            val hostUnquoted = if (isWindows()) unquotePowerShell(hostQuoted) else unquotePosix(hostQuoted)
-            assertEquals(argument, hostUnquoted, "Host shell: $argument")
-        }
-    }
-
-    @Test
-    fun `POSIX shell receives metacharacters literally`() {
-        val shell = java.io.File("/bin/sh")
-        if (!shell.exists()) return
-
-        val directory = Files.createTempDirectory("git-run-in-terminal").toFile()
-        val sentinel = directory.resolve("shell-command-ran").absolutePath
-        val arguments =
-            listOf(
-                "'",
-                "\"",
-                "\\",
-                "",
-                "\$(touch \"$sentinel\")",
-                "`touch \"$sentinel\"`",
-                "line one\n touch \"$sentinel\"",
-                "; touch \"$sentinel\"",
-                "| touch \"$sentinel\"",
-                "&& touch \"$sentinel\"",
-                "'; touch \"$sentinel\"; ' ",
+                "; touch \"${sentinel.absolutePath}\"",
+                "| touch \"${sentinel.absolutePath}\"",
+                "&& touch \"${sentinel.absolutePath}\"",
+                "> \"${sentinel.absolutePath}\"",
+                "\$HOME",
+                "\${IFS}",
+                "~",
+                "*",
+                "?",
+                "[a-z]",
+                "#",
+                "'; touch \"${sentinel.absolutePath}\"; '",
             )
 
         try {
-            for (argument in arguments) {
-                val command = "printf '%s' ${ShellPathQuoting.posix(argument)}"
-                val process = ProcessBuilder(shell.absolutePath, "-c", command).start()
-                val output = process.inputStream.bufferedReader().use { it.readText() }
-                assertEquals(0, process.waitFor(), "shell rejected quoting for: $argument")
-                assertEquals(argument, output, "shell round trip for: $argument")
-                assertFalse(directory.resolve("shell-command-ran").exists(), "shell evaluated: $argument")
-            }
+            val unsafeArgument = "; touch ${ShellPathQuoting.posix(sentinel.absolutePath)}; #"
+            val unsafeCommand = "set -- safe $unsafeArgument; printf '%s\\000' \"\$@\""
+            val positiveControl = runShell(shell, unsafeCommand, directory, "unsafe-control")
+            assertEquals(0, positiveControl.exitCode, positiveControl.stderr)
+            assertTrue(
+                sentinel.isFile,
+                "the control command should prove the sentinel is writable and observable",
+            )
+            Files.delete(sentinel.toPath())
+
+            val builtCommand = buildGitTerminalCommand(arguments)
+            val quotedArguments = builtCommand.removePrefix("git ")
+            assertTrue(builtCommand.startsWith("git "), "the builder should include its git command prefix")
+            val script = "set -- $quotedArguments; printf '%s\\000' \"\$@\""
+            val result = runShell(shell, script, directory, "quoted-command")
+
+            assertEquals(0, result.exitCode, result.stderr)
+            val expectedOutput =
+                arguments
+                    .joinToString(separator = "\u0000", postfix = "\u0000")
+                    .toByteArray(Charsets.UTF_8)
+            assertContentEquals(expectedOutput, result.stdout)
+            assertFalse(sentinel.exists(), "the shell evaluated one of the git arguments")
         } finally {
             directory.deleteRecursively()
         }
     }
 
-    private fun unquotePosix(token: String): String {
-        assertTrue(token.length >= 2 && token.startsWith("'") && token.endsWith("'"))
-        return token.substring(1, token.length - 1).replace("'\\''", "'")
+    private fun runShell(
+        shell: File,
+        command: String,
+        directory: File,
+        name: String,
+    ): ShellResult {
+        val stdout = directory.resolve("$name.stdout")
+        val stderr = directory.resolve("$name.stderr")
+        val process =
+            ProcessBuilder(shell.absolutePath, "-c", command)
+                .redirectOutput(stdout)
+                .redirectError(stderr)
+                .start()
+
+        if (!process.waitFor(10, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            process.waitFor(5, TimeUnit.SECONDS)
+            val error = if (stderr.exists()) stderr.readText() else ""
+            fail("shell command timed out: $error")
+        }
+
+        return ShellResult(process.exitValue(), stdout.readBytes(), stderr.readText())
     }
 
-    private fun unquotePowerShell(token: String): String {
-        assertTrue(token.length >= 2 && token.startsWith("'") && token.endsWith("'"))
-        return token.substring(1, token.length - 1).replace("''", "'")
-    }
+    private data class ShellResult(
+        val exitCode: Int,
+        val stdout: ByteArray,
+        val stderr: String,
+    )
 
     private fun isWindows(): Boolean = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
 }
