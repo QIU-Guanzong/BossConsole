@@ -226,7 +226,7 @@ jobs:
       matrix:
         # macOS runs on PRs into main, pushes to main and manual runs only. PRs into
         # dev/develop gate on the other OSes: hosted macOS runs few jobs at once.
-        os: ${{ fromJSON(github.event_name == 'pull_request' && github.base_ref != 'main' && '["ubuntu-latest",  "windows-latest"]' || '["ubuntu-latest",  "macos-latest",  "windows-latest"]') }}
+        os: ${{ fromJSON(github.event_name == 'pull_request' && github.base_ref != 'main' && '["ubuntu-latest", "windows-latest"]' || '["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
 
     steps:
