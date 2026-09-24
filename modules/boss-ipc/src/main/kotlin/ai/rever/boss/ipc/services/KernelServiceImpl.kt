@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicReference
 /** Signature of the host-wired broker that invokes a registered process's capability. */
 private typealias CapabilityBroker = suspend (InvokeCapabilityRequest) -> InvokeCapabilityResponse
 
-@Suppress("TooManyFunctions") // Registration, heartbeat, status, shutdown and capability mediation share one process table; deregistration is one more entry point on it.
+@Suppress("TooManyFunctions") // registration, heartbeat, status, shutdown and mediation share one process table.
 class KernelServiceImpl(
     private val onProcessRegistered: suspend (String, ProcessManifest, String) -> Unit = { _, _, _ -> },
     private val onShutdownRequested: suspend (String, Boolean) -> Boolean = { _, _ -> true },
