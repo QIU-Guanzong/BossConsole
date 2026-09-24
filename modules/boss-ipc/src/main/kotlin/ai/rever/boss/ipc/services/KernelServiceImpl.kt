@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference
  * - Process status queries
  * - Shutdown requests
  */
+@Suppress("TooManyFunctions") // Registration, heartbeat, status and shutdown share one process table; deregistration is one more entry point on it.
 class KernelServiceImpl(
     private val onProcessRegistered: suspend (String, ProcessManifest, String) -> Unit = { _, _, _ -> },
     private val onShutdownRequested: suspend (String, Boolean) -> Boolean = { _, _ -> true },
