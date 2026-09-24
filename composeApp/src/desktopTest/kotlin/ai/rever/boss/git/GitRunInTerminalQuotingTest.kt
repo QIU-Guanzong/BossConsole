@@ -1,15 +1,12 @@
 package ai.rever.boss.git
 
-import ai.rever.boss.components.events.GitTerminalEventBus
-import ai.rever.boss.components.events.GitTerminalOpenEvent
-import ai.rever.boss.ipc.IpcEventBridge
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
+import ai.rever.boss.components.workspaces.CommandProcessor
+import ai.rever.boss.components.workspaces.ShellPathQuoting
 import java.nio.file.Files
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * Pins the quoting on [GitService.runInTerminal]: it builds a shell command string, so an
@@ -19,49 +16,83 @@ import kotlin.test.assertEquals
  */
 class GitRunInTerminalQuotingTest {
     @Test
-    fun `every argument reaches the terminal shell-quoted`() =
-        runTest {
-            val dir = Files.createTempDirectory("git-run-in-terminal").toFile()
-            // Capture through the IPC bridge rather than the shared flow: openGitTerminal
-            // awaits forward() inline, so the event is captured deterministically inside
-            // runInTerminal with no SharedFlow subscriber timing involved.
-            val captured = AtomicReference<GitTerminalOpenEvent>()
-            GitTerminalEventBus.ipcBridge =
-                object : IpcEventBridge {
-                    override suspend fun forward(
-                        eventType: String,
-                        payload: Any,
-                        sourceWindowId: String,
-                    ) {
-                        (payload as? GitTerminalOpenEvent)
-                            ?.takeIf { it.sourceWindowId == "win-1" }
-                            ?.let(captured::set)
-                    }
-                }
-            val previousProject = GitService.getCurrentProjectPath()
-            try {
-                // alignCurrentProjectPath binds the global path with no git probing.
-                // GitService is a shared singleton, so a concurrent clear in the suite can
-                // still null it between our bind and the emit - rebind and re-emit until
-                // the bridge captures our event; every emission carries the same command.
-                withTimeout(10_000) {
-                    while (captured.get() == null) {
-                        GitService.alignCurrentProjectPath(dir.absolutePath)
-                        GitService.runInTerminal("win-1", "status;", "$(touch /tmp/x)")
-                        delay(50)
-                    }
-                }
-                // Single-quote-literal quoting is identical on POSIX and PowerShell for
-                // arguments without an embedded quote, so this string holds on every host.
-                assertEquals("git 'status;' '\$(touch /tmp/x)'", captured.get().command)
-            } finally {
-                GitTerminalEventBus.ipcBridge = null
-                if (previousProject != null) {
-                    GitService.alignCurrentProjectPath(previousProject)
-                } else {
-                    GitService.clearCurrentProjectPathForTests()
-                }
-                dir.deleteRecursively()
-            }
+    fun `runInTerminal command builder quotes every argument independently`() {
+        val arguments =
+            listOf(
+                "status",
+                "'",
+                "\"",
+                "\\",
+                "",
+                "\$(touch sentinel)",
+                "`touch sentinel`",
+                "line one\nline two",
+                ";",
+                "|",
+                "&&",
+            )
+
+        val expected = arguments.joinToString(" ", prefix = "git ") { CommandProcessor.quotePath(it) }
+        assertEquals(expected, buildGitTerminalCommand(arguments))
+
+        for (argument in arguments) {
+            assertEquals(argument, unquotePosix(ShellPathQuoting.posix(argument)), "POSIX: $argument")
+            assertEquals(
+                argument,
+                unquotePowerShell(ShellPathQuoting.powershell(argument)),
+                "PowerShell: $argument",
+            )
+            val hostQuoted = CommandProcessor.quotePath(argument)
+            val hostUnquoted = if (isWindows()) unquotePowerShell(hostQuoted) else unquotePosix(hostQuoted)
+            assertEquals(argument, hostUnquoted, "Host shell: $argument")
         }
+    }
+
+    @Test
+    fun `POSIX shell receives metacharacters literally`() {
+        val shell = java.io.File("/bin/sh")
+        if (!shell.exists()) return
+
+        val directory = Files.createTempDirectory("git-run-in-terminal").toFile()
+        val sentinel = directory.resolve("shell-command-ran").absolutePath
+        val arguments =
+            listOf(
+                "'",
+                "\"",
+                "\\",
+                "",
+                "\$(touch \"$sentinel\")",
+                "`touch \"$sentinel\"`",
+                "line one\n touch \"$sentinel\"",
+                "; touch \"$sentinel\"",
+                "| touch \"$sentinel\"",
+                "&& touch \"$sentinel\"",
+                "'; touch \"$sentinel\"; ' ",
+            )
+
+        try {
+            for (argument in arguments) {
+                val command = "printf '%s' ${ShellPathQuoting.posix(argument)}"
+                val process = ProcessBuilder(shell.absolutePath, "-c", command).start()
+                val output = process.inputStream.bufferedReader().use { it.readText() }
+                assertEquals(0, process.waitFor(), "shell rejected quoting for: $argument")
+                assertEquals(argument, output, "shell round trip for: $argument")
+                assertFalse(directory.resolve("shell-command-ran").exists(), "shell evaluated: $argument")
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    private fun unquotePosix(token: String): String {
+        assertTrue(token.length >= 2 && token.startsWith("'") && token.endsWith("'"))
+        return token.substring(1, token.length - 1).replace("'\\''", "'")
+    }
+
+    private fun unquotePowerShell(token: String): String {
+        assertTrue(token.length >= 2 && token.startsWith("'") && token.endsWith("'"))
+        return token.substring(1, token.length - 1).replace("''", "'")
+    }
+
+    private fun isWindows(): Boolean = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
 }
