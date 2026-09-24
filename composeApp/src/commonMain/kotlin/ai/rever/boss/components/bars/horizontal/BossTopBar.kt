@@ -7,7 +7,6 @@ import ai.rever.boss.components.buttons.BossActionButton
 import ai.rever.boss.components.buttons.QuickActionHints
 import ai.rever.boss.components.buttons.ToolboxButton
 import ai.rever.boss.components.dialogs.CommitDialog
-import ai.rever.boss.components.dialogs.ProjectOpenModeDialog
 import ai.rever.boss.components.dialogs.ProjectSelectionDialog
 import ai.rever.boss.components.dialogs.RemoveProjectDialog
 import ai.rever.boss.components.events.PanelEventBus
@@ -38,7 +37,6 @@ import ai.rever.boss.window.LocalWindowId
 import ai.rever.boss.window.LocalWindowProjectState
 import ai.rever.boss.window.Project
 import ai.rever.boss.window.WindowGitState
-import ai.rever.boss.window.WindowOperations
 import ai.rever.boss.window.selectProjectInWindow
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape

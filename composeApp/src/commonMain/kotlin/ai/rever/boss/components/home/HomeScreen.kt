@@ -109,12 +109,10 @@ fun HomeScreen(modifier: Modifier = Modifier) {
 
             JumpBackInSection(
                 recentProjects = recentProjects,
-                windowHoldsProject = selectedProject.path.isNotEmpty(),
                 actions = actions,
-                // Both land on the window's one "where should this open?" dialog, whether or
-                // not a project is already open: a Space carries its own project either way.
-                onAskWhichWindow = openProject,
-                onOpenHere = openProject,
+                // The window's one "where should this open?" dialog, whether or not a project is
+                // already open: a Space carries its own project either way.
+                onOpen = openProject,
                 onAskToRemove = { projectToRemove = it },
             )
 
@@ -147,10 +145,8 @@ private const val RECENT_FILE_LIMIT = 8
 @Composable
 private fun JumpBackInSection(
     recentProjects: List<Project>,
-    windowHoldsProject: Boolean,
     actions: HomeActions,
-    onAskWhichWindow: (Project) -> Unit,
-    onOpenHere: (Project) -> Unit,
+    onOpen: (Project) -> Unit,
     onAskToRemove: (Project) -> Unit,
 ) {
     if (recentProjects.isEmpty()) return
@@ -164,7 +160,7 @@ private fun JumpBackInSection(
                 ProjectCard(
                     project = project,
                     // Only ask which window when this one already holds a project.
-                    onClick = { if (windowHoldsProject) onAskWhichWindow(project) else onOpenHere(project) },
+                    onClick = { onOpen(project) },
                     // Asks rather than removing. The cross used to forget the project on
                     // the click, with no undo and no way to get rid of the folder.
                     onRemove = { onAskToRemove(project) },

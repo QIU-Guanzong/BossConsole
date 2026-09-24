@@ -65,7 +65,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
@@ -234,9 +233,9 @@ internal fun BossAppStartupEffects(state: BossAppState) {
     // "Open this project" from anywhere outside BossAppDialogs - the top bar, Home, the Open
     // Project list - lands on this window's one "where should it open?" dialog.
     LaunchedEffect(windowId) {
-        ProjectOpenRequests.requests
-            .filter { it.windowId == windowId }
-            .collect { state.projectToOpen = it.project }
+        ProjectOpenRequests.requestsFor(windowId).collect { project ->
+            requestProjectOpen(state, state.windowProjectState, project)
+        }
     }
 
     // Collect window-specific project state reactively (used by multiple effects below)
@@ -374,22 +373,16 @@ internal fun BossAppStartupEffects(state: BossAppState) {
         val path = selectedProject.path
         if (path.isEmpty()) return@LaunchedEffect
 
-        // A project the restore selected is not a project the user just picked. Last
-        // Session carries its own layout, and both of the branches below would discard
-        // it - the apply by clearing panels, the prompt by covering it with a question
-        // nobody asked. See isUserProjectSelection.
-        if (!isUserProjectSelection(path, state.restoredProjectPath)) {
-            // Consumed, so re-opening the same project later still counts as a choice.
-            state.restoredProjectPath = null
-            return@LaunchedEffect
-        }
-
-        // Placed through "where should this open?", which already decided the layout. Consumed
-        // for the reason the restored path is.
-        if (path == state.answeredProjectPath) {
-            state.answeredProjectPath = null
-            return@LaunchedEffect
-        }
+        // A project the restore selected is not a project the user just picked: Last Session
+        // carries its own layout, and both branches below would discard it - the apply by
+        // clearing panels, the prompt by covering it with a question nobody asked. Nor is one a
+        // person placed through "where should this open?", which already decided the layout.
+        // Both marks are consumed together, so re-opening the same project later still counts as
+        // a choice. See gateProjectSelection.
+        val gate = gateProjectSelection(path, state.restoredProjectPath, state.answeredProjectPath)
+        state.restoredProjectPath = gate.restoredProjectPath
+        state.answeredProjectPath = gate.answeredProjectPath
+        if (!gate.handle) return@LaunchedEffect
 
         when (val choice = WorkspaceSettingsManager.currentSettings.value.resolveOnProjectSelection()) {
             // Named rather than folded into an else, so adding a fourth mode has to
@@ -400,7 +393,7 @@ internal fun BossAppStartupEffects(state: BossAppState) {
             is ProjectSelectionWorkspace.Ask -> {
                 // The prompt names the project so it reads as a consequence of what was
                 // just done, rather than an unexplained dialog at startup.
-                state.pendingWorkspacePrompt = selectedProject.name
+                state.pendingWorkspacePrompt = SpacePrompt(selectedProject, placeOnPick = false)
             }
 
             is ProjectSelectionWorkspace.Apply -> {

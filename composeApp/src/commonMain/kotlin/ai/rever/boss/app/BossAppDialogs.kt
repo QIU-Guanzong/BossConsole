@@ -42,8 +42,11 @@ import ai.rever.boss.components.windows.SettingsWindow
 import ai.rever.boss.components.wizard.plugin.PluginWizardIntegration
 import ai.rever.boss.components.wizard.plugin.PluginWizardWindow
 import ai.rever.boss.components.wizard.plugin.rememberPluginInstallWizardState
+import ai.rever.boss.components.workspaces.ProjectSelectionWorkspace
 import ai.rever.boss.components.workspaces.SelectWorkspaceDialog
+import ai.rever.boss.components.workspaces.WorkspaceSettingsManager
 import ai.rever.boss.components.workspaces.applyWorkspace
+import ai.rever.boss.components.workspaces.resolveOnProjectSelection
 import ai.rever.boss.components.workspaces.spaceToOpen
 import ai.rever.boss.components.workspaces.workspaceManager
 import ai.rever.boss.dashboard.DashboardStatsManager
@@ -402,25 +405,29 @@ internal fun BossAppDialogs(state: BossAppState) {
         )
     }
 
-    // "Which workspace do you want?" - raised by the project-selection effect when the
-    // default workspace setting is `ask`, the default on a fresh install.
-    state.pendingWorkspacePrompt?.let { projectName ->
+    // "Which Space?" - raised by "New Space" in the project-open dialog, and by the
+    // project-selection effect when a plugin selects a project and the setting is `ask`.
+    state.pendingWorkspacePrompt?.let { prompt ->
         val workspaces by workspaceManager.workspaces.collectAsState()
         SelectWorkspaceDialog(
-            projectName = projectName,
+            projectName = prompt.project.name,
+            projectIsOpen = !prompt.placeOnPick,
             // The same list the top bar's workspace button and the app menu show, saved
             // workspaces included. Reading PredefinedWorkspaces here instead would offer a
             // different set than the rest of the app does.
             //
             // Only the Spaces this project can open in: applying a saved Space also selects the
             // project it was saved with, so one of another project's would swap this one out.
-            workspaces = spacesForProject(workspaces, windowProjectState.selectedProject.value.path),
+            workspaces = spacesForProject(workspaces, prompt.project.path),
             onDismiss = {
                 state.pendingWorkspacePrompt = null
                 state.focusRequester.requestFocus()
             },
             onSelect = { workspace ->
                 state.pendingWorkspacePrompt = null
+                // New Space places the project only now, so dismissing the list opened nothing.
+                if (prompt.placeOnPick) placeProjectHere(state, windowProjectState, prompt.project)
+                if (prompt.showCodebase) state.draggablePanelComponent.setPanelVisible(left.top, true)
                 coroutineScope.launch {
                     // Preserve, load, apply: the same three steps the top bar's workspace
                     // switch takes, so a workspace opened from here can be switched away
@@ -431,7 +438,7 @@ internal fun BossAppDialogs(state: BossAppState) {
                     }
                     // A template picked here is materialised into a Space first - see
                     // `spaceToOpen`, which every pick in the app goes through.
-                    val opened = spaceToOpen(workspace, windowProjectState.selectedProject.value.path)
+                    val opened = spaceToOpen(workspace, prompt.project.path)
                     workspaceManager.loadWorkspace(opened)
                     applyWorkspace(opened, splitViewState, windowProjectState)
                 }
@@ -1092,13 +1099,10 @@ internal fun BossAppDialogs(state: BossAppState) {
         rememberDirectoryPicker { path ->
             path?.let {
                 val projectName = it.extractFileName().ifEmpty { "Unknown" }
-                // Asked where it goes, like every other way of opening a project.
-                state.projectToOpen = Project(name = projectName, path = it)
-                // Show CodeBase panel when project is selected
-                state.draggablePanelComponent.setPanelVisible(
-                    left.top,
-                    true,
-                )
+                // Asked where it goes, like every other way of opening a project. The CodeBase
+                // panel this picker has always shown opens once the project lands HERE.
+                val picked = Project(name = projectName, path = it)
+                requestProjectOpen(state, windowProjectState, picked, showCodebase = true)
                 // Close the dialog after selection
                 state.showProjectDialog = false
             }
@@ -1124,7 +1128,7 @@ internal fun BossAppDialogs(state: BossAppState) {
                 state.focusRequester.requestFocus()
             },
             onProjectCreated = { project ->
-                state.projectToOpen = project
+                requestProjectOpen(state, windowProjectState, project)
                 state.showNewProjectDialog = false
                 state.focusRequester.requestFocus()
             },
@@ -1146,7 +1150,7 @@ internal fun BossAppDialogs(state: BossAppState) {
                         path = projectPath,
                     )
                 state.showCloneProjectDialog = false
-                state.projectToOpen = project
+                requestProjectOpen(state, windowProjectState, project)
             },
         )
     }
@@ -1158,19 +1162,25 @@ internal fun BossAppDialogs(state: BossAppState) {
             project = project,
             onDismiss = {
                 state.projectToOpen = null
+                state.projectToOpenShowsCodebase = false
                 state.focusRequester.requestFocus()
             },
             onOpenInThisSpace = { selectedProj ->
-                openProjectHere(state, windowProjectState, selectedProj, askForSpace = false)
+                placeProjectHere(state, windowProjectState, selectedProj)
+                if (state.projectToOpenShowsCodebase) state.draggablePanelComponent.setPanelVisible(left.top, true)
                 state.projectToOpen = null
+                state.projectToOpenShowsCodebase = false
                 state.focusRequester.requestFocus()
             },
             onOpenInNewSpace = { selectedProj ->
-                openProjectHere(state, windowProjectState, selectedProj, askForSpace = true)
+                state.pendingWorkspacePrompt =
+                    SpacePrompt(selectedProj, placeOnPick = true, showCodebase = state.projectToOpenShowsCodebase)
                 state.projectToOpen = null
+                state.projectToOpenShowsCodebase = false
                 state.focusRequester.requestFocus()
             },
             onOpenInNewWindow = { selectedProj ->
+                state.projectToOpenShowsCodebase = false
                 // Create new window with the project - each window has independent project state
                 WindowOperations.createNewWindowWithProject(selectedProj)
                 state.projectToOpen = null
@@ -1353,22 +1363,44 @@ private fun HtmlFilePrompt(state: BossAppState) {
 }
 
 /**
- * Give this window [project], answering "where" with the Space on screen or a new one.
+ * A person asked to open [project] in this window: ask where, or - when the default-Space setting
+ * says not to ask - place it straight away and let the project-selection effect apply what the
+ * setting names (None keeps the layout, a layout id applies that layout).
+ *
+ * Ask is the default, and it is the three-way dialog. The other two exist so someone who set a
+ * layout keeps the one-step open they configured, rather than being asked and then having to find
+ * that layout again under New Space.
+ */
+internal fun requestProjectOpen(
+    state: BossAppState,
+    windowProjectState: WindowProjectState,
+    project: Project,
+    showCodebase: Boolean = false,
+) {
+    if (WorkspaceSettingsManager.currentSettings.value.resolveOnProjectSelection() is ProjectSelectionWorkspace.Ask) {
+        state.projectToOpen = project
+        state.projectToOpenShowsCodebase = showCodebase
+    } else {
+        selectProjectInWindow(windowProjectState, project)
+        if (showCodebase) state.draggablePanelComponent.setPanelVisible(left.top, true)
+    }
+}
+
+/**
+ * Give this window [project], after a person answered "where" with this window.
  *
  * [BossAppState.answeredProjectPath] is set BEFORE the selection so the project-selection effect,
  * which observes it a frame later, knows the question was already answered. Not set when the
  * project is already the selected one: the path does not change, the effect never runs, and a
  * recorded path would then wrongly swallow a later selection of it.
  */
-private fun openProjectHere(
+private fun placeProjectHere(
     state: BossAppState,
     windowProjectState: WindowProjectState,
     project: Project,
-    askForSpace: Boolean,
 ) {
     if (windowProjectState.selectedProject.value.path != project.path) {
         state.answeredProjectPath = project.path
         selectProjectInWindow(windowProjectState, project)
     }
-    if (askForSpace) state.pendingWorkspacePrompt = project.name
 }

@@ -6,6 +6,8 @@ import ai.rever.boss.components.workspaces.PredefinedWorkspaces
 import ai.rever.boss.plugin.workspace.PanelConfig
 import ai.rever.boss.plugin.workspace.SplitConfig
 import ai.rever.boss.window.Project
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -13,6 +15,7 @@ import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * Opening a project asks one question - This Space, New Space, or New Window - and "New Space"
@@ -46,20 +49,36 @@ class ProjectOpenRequestsTest {
     }
 
     @Test
-    fun `a request reaches the window it names`() =
+    fun `a request reaches the window it names, and only that window`() =
         runBlocking {
             val project = Project(name = "app", path = "/work/app")
-            val received =
-                launch {
-                    assertEquals(ProjectOpenRequest("w1", project), ProjectOpenRequests.requests.first())
-                }
+            val first = CompletableDeferred<Project>()
+            val w1 = launch { first.complete(ProjectOpenRequests.requestsFor("w1").first()) }
+            val w2 = launch { ProjectOpenRequests.requestsFor("w2").collect { } }
             yield()
-            ProjectOpenRequests.ask("w1", project)
-            received.join()
+
+            assertTrue(ProjectOpenRequests.ask("w2", Project(name = "other", path = "/work/other")))
+            assertTrue(ProjectOpenRequests.ask("w1", project))
+            assertEquals(project, first.await(), "w1 skipped the request addressed to w2")
+
+            w1.join()
+            w2.cancelAndJoin()
         }
 
     @Test
-    fun `with no window to ask in, the caller is told to select directly`() {
-        assertFalse(ProjectOpenRequests.ask(null, Project(name = "app", path = "/work/app")))
-    }
+    fun `a window that is not listening is refused, so the caller selects directly`() =
+        runBlocking {
+            val project = Project(name = "app", path = "/work/app")
+            assertFalse(ProjectOpenRequests.ask(null, project))
+            assertFalse(
+                ProjectOpenRequests.ask("nobody-listening", project),
+                "a dropped request must not claim success",
+            )
+
+            val listener = launch { ProjectOpenRequests.requestsFor("brief").collect { } }
+            yield()
+            assertTrue(ProjectOpenRequests.ask("brief", project))
+            listener.cancelAndJoin()
+            assertFalse(ProjectOpenRequests.ask("brief", project), "unregistered once its collector stops")
+        }
 }
