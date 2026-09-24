@@ -765,6 +765,26 @@ the next managed-profile creation. This is not a guaranteed shutdown flush. This
 is not an engine-abort mechanism and does not coordinate external raw-JxBrowser
 callers or engine-level forced closure.
 
+## JxBrowser's native libraries swap the process's malloc zones when they load
+
+On macOS, `libtoolkit`, `libipc` and `libawt_toolkit` each carry Chromium's allocator shim, and a
+static initializer in each makes PartitionAlloc the default malloc zone the way Chromium does:
+register its zone, **unregister the system default zone**, re-register it. Between the last two
+calls the system zone is not listed, and a `free()` on any other thread lands in the shim's
+fallback, finds no owning zone and executes `brk #0` - EXC_BREAKPOINT / SIGTRAP, uncatchable from
+Java. Measured on 2026-09-23 (JxBrowser 9.5.0 / Chromium 152.0.7977.65): crash PC
+`libtoolkit+0x4b178`, main thread in `ClassLoader.defineClass1`, `fluck-engine-prewarm` alive,
+~0.8s after launch. The 27 July 2026 release crash (9.2.60, +514ms) has the same signature.
+
+`ChromiumToolkitPreload` therefore `System.load`s `libtoolkit` and `libipc` on the **main thread**
+from `ChromiumBootstrap.prepare()`, before the pre-warm thread exists, from the directory
+`FluckEngine.resolveEngineDir` picks (so JxBrowser's own later load of the same canonical path is
+a JVM no-op - never preload from a different directory, or the library loads twice and swaps zones
+twice). Only when the engine will boot and carries the jar's Chromium build. This narrows the race
+rather than removing it: JVM service threads still run, and `libawt_toolkit` is not preloaded
+because it links `@rpath/libjawt.dylib` and must follow AWT. Off switch: `BOSS_TOOLKIT_PRELOAD=false`.
+Only moving JxBrowser out of the host process removes this family.
+
 ## Browser telemetry, and how to turn it off
 
 The integrated browser reports which sites BOSS is used with and how - page views,
