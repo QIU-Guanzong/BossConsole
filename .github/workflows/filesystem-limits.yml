@@ -32,7 +32,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        # macOS runs on PRs into main, pushes to main and manual runs only. PRs into
+        # dev/develop gate on the other OSes: hosted macOS runs few jobs at once.
+        os: ${{ fromJSON(github.event_name == 'pull_request' && github.base_ref != 'main' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
