@@ -30,7 +30,8 @@ class ChromiumToolkitPreloadTest {
         val dir = engine("152.0.7977.65", "libtoolkit.dylib", "libipc.dylib", "libawt_toolkit.dylib")
         val files = ChromiumToolkitPreload.librariesFor(dir, true, "BOSS", "152.0.7977.65")
         assertEquals(listOf("libtoolkit.dylib", "libipc.dylib"), files.map { it.name })
-        assertTrue(files.all { it.path.contains("/Versions/152.0.7977.65/Libraries/") })
+        // invariantSeparatorsPath: the rule must hold on the Windows runner too, where File.path uses "\\".
+        assertTrue(files.all { it.invariantSeparatorsPath.contains("/Versions/152.0.7977.65/Libraries/") })
     }
 
     @Test
