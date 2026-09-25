@@ -2,9 +2,11 @@ package ai.rever.boss.plugin.loader
 
 import ai.rever.boss.plugin.api.PluginManifest
 import java.io.File
+import java.util.jar.JarEntry
 import java.util.jar.JarOutputStream
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
 
@@ -79,6 +81,38 @@ class PluginClassLoaderSandboxTest {
             assertSame(Unit::class.java, loader.loadClass("kotlin.Unit"))
         } finally {
             loader.close()
+        }
+    }
+
+    @Test
+    fun `rendering classes use the host identity even when bundled by a plugin`() {
+        val names = listOf("org.jetbrains.skia.Image", "org.jetbrains.skiko.SkiaLayer")
+        val jar = emptyJar()
+        JarOutputStream(jar.outputStream()).use { output ->
+            for (name in names) {
+                val resource = name.replace('.', '/') + ".class"
+                output.putNextEntry(JarEntry(resource))
+                requireNotNull(hostLoader.getResourceAsStream(resource)).use { it.copyTo(output) }
+                output.closeEntry()
+            }
+        }
+        val manager = PluginClassLoaderManager(parentClassLoader = hostLoader)
+        for (pluginJar in listOf(emptyJar(), jar)) {
+            val id = "com.example.rendering"
+            val loader = manager.createClassLoader(manifest(id), pluginJar.absolutePath)
+            try {
+                for (name in names) {
+                    assertSame(hostLoader.loadClass(name), loader.loadClass(name))
+                    val resource = name.replace('.', '/') + ".class"
+                    assertEquals(hostLoader.getResource(resource), loader.getResource(resource))
+                }
+                // Sharing the renderer must not open the rest of the host classpath.
+                assertFailsWith<ClassNotFoundException> {
+                    loader.loadClass(PluginClassLoaderManager::class.java.name)
+                }
+            } finally {
+                manager.closeClassLoader(id, loader)
+            }
         }
     }
 

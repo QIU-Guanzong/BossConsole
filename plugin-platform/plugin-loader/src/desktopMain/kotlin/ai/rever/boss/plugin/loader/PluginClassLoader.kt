@@ -200,6 +200,10 @@ class PluginClassLoader(
                 "ai.rever.boss.plugin.workspace.",
                 // Compose (shared UI framework)
                 "androidx.compose.",
+                // Compose exchanges Skia objects with plugins; share its rendering runtime
+                // and native-library owner instead of defining a second copy in a plugin.
+                "org.jetbrains.skia.",
+                "org.jetbrains.skiko.",
                 // Decompose (shared navigation)
                 "com.arkivanov.decompose.",
                 "com.arkivanov.essenty.",
