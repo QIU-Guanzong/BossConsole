@@ -54,7 +54,7 @@ kotlin {
                 implementation(kotlin("test"))
                 implementation(kotlin("test-junit5"))
                 implementation(libs.junit.jupiter)
-                // Real rendering classes for plugin/host class-identity regression coverage.
+                // Explicit so rendering tests do not rely on plugin-api-core re-exporting Compose.
                 implementation(libs.compose.mp.ui)
                 implementation(libs.kotlinx.coroutines.test)
             }

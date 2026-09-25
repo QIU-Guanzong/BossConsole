@@ -6,6 +6,12 @@ android-minSdk = "24"
 android-targetSdk = "34"
 androidx-activityCompose = "1.10.1"
 androidx-lifecycle = "2.11.0"
+# Compose also determines the host Skia/Skiko runtime shared parent first via
+# PluginClassLoader.defaultSharedPackages, regardless of a plugin's bundled copy.
+# A bump is a cross-repo change: re-check consumers across boss_plugins.
+# BinaryCompatibilityValidator checks members only under ai.rever.boss.plugin.*;
+# Skia/Skiko signature drift can surface as a runtime NoSuchMethodError instead
+# of an incompatible-plugin rejection at load time.
 compose-multiplatform = "1.12.0"
 compose-icons = "1.1.1"
 decompose = "3.5.0"

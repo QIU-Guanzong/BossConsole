@@ -104,7 +104,13 @@ class PluginClassLoaderSandboxTest {
                 for (name in names) {
                     assertSame(hostLoader.loadClass(name), loader.loadClass(name))
                     val resource = name.replace('.', '/') + ".class"
-                    assertEquals(hostLoader.getResource(resource), loader.getResource(resource))
+                    assertEquals(hostLoader.getResource(resource)?.toExternalForm(), loader.getResource(resource)?.toExternalForm())
+                }
+                // Prove the neighbouring class exists on the host before testing the fence.
+                // A broad "org.jetbrains." shared prefix would incorrectly expose it.
+                hostLoader.loadClass("org.jetbrains.annotations.NotNull")
+                assertFailsWith<ClassNotFoundException> {
+                    loader.loadClass("org.jetbrains.annotations.NotNull")
                 }
                 // Sharing the renderer must not open the rest of the host classpath.
                 assertFailsWith<ClassNotFoundException> {
